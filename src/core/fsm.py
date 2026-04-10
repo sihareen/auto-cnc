@@ -60,7 +60,7 @@ class CNCStateMachine:
         transition_key = (self.current_state, new_state)
         if transition_key in self.transition_validators:
             if not self.transition_validators[transition_key](**kwargs):
-                logger.warning(f"Invalid transition: {self.current_state} &#8594; {new_state}")
+                logger.warning(f"Invalid transition: {self.current_state} -> {new_state}")
                 return False
         
         # Execute state exit if needed
@@ -74,7 +74,7 @@ class CNCStateMachine:
         # Execute state entry
         self._execute_state_entry(new_state, **kwargs)
         
-        logger.info(f"State transition: {self.previous_state} &#8594; {self.current_state}")
+        logger.info(f"State transition: {self.previous_state} -> {self.current_state}")
         return True
     
     def _execute_state_entry(self, state: CNCState, **kwargs):
@@ -94,9 +94,9 @@ class CNCStateMachine:
             except Exception as e:
                 logger.error(f"State exit error for {state}: {e}")
     
-    def get_state(self) -> CNCState:
-        """Get current state"""
-        return self.current_state
+    def get_state(self) -> str:
+        """Get current state name"""
+        return self.current_state.name
     
     def get_status(self) -> Dict[str, Any]:
         """Get full status information"""
