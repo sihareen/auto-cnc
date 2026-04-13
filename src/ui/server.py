@@ -70,7 +70,10 @@ def init_components():
     
     try:
         from src.vision.camera import CameraCapture
-        camera = CameraCapture(camera_index=0)
+        camera = CameraCapture(camera_index=4)
+        camera.connect()
+        camera.start_streaming()
+        logger.info("Camera streaming started")
     except Exception as e:
         logger.warning(f"Camera init warning: {e}")
         camera = None
@@ -83,6 +86,9 @@ def init_components():
     except Exception as e:
         logger.warning(f"Detector init warning: {e}")
         detector = None
+    
+    import time
+    time.sleep(0.5)  # Wait for camera to be ready
     logger.info("Components initialized (some may be None)")
 
 init_components()
@@ -107,8 +113,51 @@ async def websocket_endpoint(websocket: WebSocket):
             cmd = message.get("command")
             
             if cmd == "start":
-                # Start drilling workflow
-                system_state["status"] = "STARTING"
+                system_state["status"] = "ACQUIRING"
+                await broadcast_state()
+                
+                if camera and detector and transformer:
+                    frame = camera.get_frame()
+                    if frame is not None:
+                        detections = detector.detect(frame)
+                        system_state["last_detections"] = len(detections)
+                        
+                        pixel_points = [
+                            ((d.bbox[0]+d.bbox[2])/2, (d.bbox[1]+d.bbox[3])/2, d.confidence)
+                            for d in detections
+                        ]
+                        machine_coords = transformer.transform_detections(pixel_points, min_confidence=0.25)
+                        
+                        if machine_coords and job_manager:
+                            job = job_manager.create_job(machine_coords, optimize=True)
+                            system_state["progress"] = {"current": 0, "total": len(job.points)}
+                            system_state["status"] = "TRANSFORM"
+                            await broadcast_state()
+                            
+                            if cnc_controller and cnc_controller.is_connected:
+                                cnc_controller.home_axis("XYZ")
+                                system_state["status"] = "DRILLING"
+                                await broadcast_state()
+                                
+                                for i, point in enumerate(job.points):
+                                    cnc_controller.move_to(x=point.x, y=point.y, z=5.0, feedrate=1000)
+                                    cnc_controller.move_to(z=-1.5, feedrate=300)
+                                    cnc_controller.move_to(z=5.0, feedrate=1000)
+                                    job.mark_drilled(i)
+                                    system_state["progress"] = {"current": i+1, "total": len(job.points)}
+                                    await broadcast_state()
+                                
+                                cnc_controller.move_to(z=10.0)
+                                system_state["status"] = "COMPLETE"
+                            else:
+                                system_state["status"] = "SIMULATE"
+                        else:
+                            system_state["status"] = "NO_POINTS"
+                    else:
+                        system_state["status"] = "NO_FRAME"
+                else:
+                    system_state["status"] = "NOT_READY"
+                
                 await broadcast_state()
                 
             elif cmd == "stop":
