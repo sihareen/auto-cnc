@@ -1,0 +1,13 @@
+# Markers from calibrate.jpeg
+# Total: 9 points
+# Format: x y (pixel coordinates)
+#
+244.0 675.0
+243.0 356.0
+241.0 51.0
+641.0 72.0
+630.0 365.0
+632.0 670.0
+1042.0 655.0
+1043.0 382.0
+1047.0 72.0

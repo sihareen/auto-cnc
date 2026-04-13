@@ -29,29 +29,58 @@ class CameraCapture:
     
     Features:
     - Multiple camera backend support
+    - Auto-detect USB camera (0ac8:3370)
     - Frame buffering for inference
     - ROI selection and cropping
     - Real-time frame rate control
     """
     
-    def __init__(self, camera_index: int = 0, 
-                 width: int = 1920, 
-                 height: int = 1080, 
+    def __init__(self, camera_index: int = None, 
+                 width: int = 1280, 
+                 height: int = 720, 
                  fps: int = 30):
-        self.camera_index = camera_index
-        self.width = width
-        self.height = height
-        self.fps = fps
+        # Initialize base attributes first
         self.cap: Optional[cv2.VideoCapture] = None
         self.state = CameraState.DISCONNECTED
         self.frame_buffer = []
-        self.buffer_size = 5  # Number of frames to buffer
+        self.buffer_size = 5
         self.current_frame: Optional[np.ndarray] = None
         self.frame_lock = threading.Lock()
         self.streaming = False
         self.stream_thread: Optional[threading.Thread] = None
+        self.read_thread: Optional[threading.Thread] = None
         self.callbacks: List[Callable] = []
-        self.roi: Optional[Tuple[int, int, int, int]] = None  # x, y, w, h
+        self.roi: Optional[Tuple[int, int, int, int]] = None
+        
+        # Auto-detect USB camera if not specified
+        if camera_index is None:
+            camera_index = self._find_usb_camera()
+        
+        self.camera_index = camera_index
+        self.width = width
+        self.height = height
+        self.fps = fps
+    
+    def _find_usb_camera(self) -> int:
+        """Find USB camera 0ac8:3370 automatically"""
+        import subprocess
+        for index in range(10):
+            try:
+                cap = cv2.VideoCapture(index)
+                if cap.isOpened():
+                    result = subprocess.run(
+                        ['v4l2-ctl', '-d', str(index), '--info'],
+                        capture_output=True, text=True, timeout=1
+                    )
+                    if '0ac8' in result.stdout or 'USB 2.0 Camera' in result.stdout:
+                        cap.release()
+                        logger.info(f"Auto-detected USB Camera (0ac8:3370) at index {index}")
+                        return index
+                    cap.release()
+            except:
+                pass
+        logger.warning("USB camera not found, using default index 0")
+        return 0
         
     def connect(self, max_attempts: int = 3) -> bool:
         """
