@@ -55,6 +55,10 @@ def init_components():
     try:
         from src.cnc.controller import GRBLController
         cnc_controller = GRBLController()
+        if cnc_controller.connect():
+            logger.info("CNC connected successfully")
+        else:
+            logger.warning("CNC connection failed")
     except Exception as e:
         logger.warning(f"Controller init warning: {e}")
         cnc_controller = None
