@@ -1,5 +1,12 @@
 # Changelog
 
+### [2026-04-13]
+- **feat:** add full drill workflow integration (run_drill_workflow.py)
+- **refactor:** update server.py dengan full drill workflow pada command 'start'
+- **feat:** integrate YOLOv7 pipeline from detect_test.py to src/vision/detector.py
+- **fix:** patch torch.load for PyTorch 2.6+ compatibility
+- **docs:** buat STRUCTURE.md dengan dokumentasi alur sistem dan script roles
+
 ### [2026-04-10]
 - **docs:** buat README.md dengan arsitektur sistem, state machine, dan usage instructions
 - **docs:** buat PLAN.md dengan 8-phase roadmap lengkap, technical stack, FSM diagram, task decomposition, dan sinkronisasi Web UI-Hardware
