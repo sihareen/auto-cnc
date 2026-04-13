@@ -75,7 +75,14 @@ def init_components():
         logger.warning(f"Camera init warning: {e}")
         camera = None
     
-    detector = None  # Lazy load
+    try:
+        from src.vision.detector import YOLODetector
+        detector = YOLODetector(model_path="best.pt", confidence_threshold=0.25, iou_threshold=0.45)
+        detector.load_model()
+        logger.info("Detector loaded successfully")
+    except Exception as e:
+        logger.warning(f"Detector init warning: {e}")
+        detector = None
     logger.info("Components initialized (some may be None)")
 
 init_components()

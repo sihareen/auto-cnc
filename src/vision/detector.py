@@ -1,21 +1,35 @@
 """
 YOLOv7 object detector for pad hole detection
+Uses official YOLOv7 pipeline from yolov7/ folder
 """
-import logging
-import time
+import sys
+from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
+
+import cv2
 import numpy as np
 import torch
-import cv2
-from pathlib import Path
 
-logger = logging.getLogger(__name__)
+ROOT = Path(__file__).resolve().parent.parent.parent
+YOLOV7_PATH = ROOT / "yolov7"
+sys.path.insert(0, str(YOLOV7_PATH))
+
+import torch
+_original_torch_load = torch.load
+def _patched_torch_load(*args, **kwargs):
+    kwargs.setdefault('weights_only', False)
+    return _original_torch_load(*args, **kwargs)
+torch.load = _patched_torch_load
+
+from models.experimental import attempt_load
+from utils.datasets import letterbox
+from utils.general import check_img_size, non_max_suppression, scale_coords
+from utils.torch_utils import select_device
+
 
 class DetectionResult:
-    """Detection result container"""
-    
     def __init__(self, 
-                 bbox: Tuple[float, float, float, float],  # x1, y1, x2, y2
+                 bbox: Tuple[float, float, float, float],
                  confidence: float,
                  class_id: int,
                  class_name: str):
@@ -28,142 +42,75 @@ class DetectionResult:
         return (f"DetectionResult(bbox={self.bbox}, confidence={self.confidence:.3f}, "
                 f"class_id={self.class_id}, class_name='{self.class_name}')")
 
+
 class YOLODetector:
-    """
-    YOLOv7 object detector for pad hole detection
-    
-    Features:
-    - Model loading and warmup
-    - Batch inference processing
-    - Confidence threshold filtering
-    - NMS (Non-Maximum Suppression)
-    - GPU/CPU device selection
-    """
-    
     def __init__(self, 
                  model_path: str,
-                 confidence_threshold: float = 0.5,
-                 iou_threshold: float = 0.5,
-                 device: str = "auto"):
+                 confidence_threshold: float = 0.25,
+                 iou_threshold: float = 0.45,
+                 img_size: int = 640,
+                 device: str = ""):
         self.model_path = Path(model_path)
         self.confidence_threshold = confidence_threshold
         self.iou_threshold = iou_threshold
-        self.device = self._select_device(device)
-        self.model: Optional[torch.nn.Module] = None
-        self.class_names: List[str] = []
-        self.input_size: Tuple[int, int] = (640, 640)  # YOLO default input size
-        self.warmup_complete = False
+        self.img_size = img_size
+        self.device_str = device
+        self.device = None
+        self.model = None
+        self.stride = None
+        self.class_names = []
         
-    def _select_device(self, device: str) -> str:
-        """Select computation device"""
-        if device == "auto":
-            if torch.cuda.is_available():
-                return "cuda"
-            elif torch.backends.mps.is_available():
-                return "mps"
-            else:
-                return "cpu"
-        return device
-    
     def load_model(self) -> bool:
-        """Load YOLOv7 model"""
         try:
             if not self.model_path.exists():
-                raise FileNotFoundError(f"Model file not found: {self.model_path}")
+                raise FileNotFoundError(f"Model not found: {self.model_path}")
             
-            logger.info(f"Loading YOLOv7 model from {self.model_path}...")
+            device = select_device(self.device_str)
+            self.device = device
+            self.model = attempt_load(self.model_path, map_location=device)
+            self.stride = int(self.model.stride.max())
+            self.img_size = check_img_size(self.img_size, s=self.stride)
+            self.model.eval()
             
-            # Load model (simplified - would use actual YOLOv7 loading)
-            # In practice, this would use the specific YOLOv7 implementation
-            self.model = torch.hub.load('WongKinYiu/yolov7', 'custom', 
-                                      path_or_model=str(self.model_path),
-                                      trust_repo=True)
-            
-            self.model.to(self.device)
-            self.model.conf = self.confidence_threshold
-            self.model.iou = self.iou_threshold
-            
-            # Get class names
-            if hasattr(self.model, 'names'):
-                self.class_names = self.model.names
-            else:
-                # Default class names for pad detection
-                self.class_names = ['pad', 'hole', 'component']
-            
-            logger.info(f"Model loaded on device: {self.device}")
-            logger.info(f"Class names: {self.class_names}")
+            self.class_names = self.model.module.names if hasattr(self.model, "module") else self.model.names
             
             return True
-            
         except Exception as e:
-            logger.error(f"Failed to load model: {e}")
+            print(f"[ERROR] Failed to load model: {e}")
             return False
     
-    def warmup(self, warmup_iterations: int = 10):
-        """Warmup model for stable inference"""
-        if not self.model:
-            raise RuntimeError("Model not loaded")
-            
-        logger.info("Warming up model...")
+    def preprocess(self, im0: np.ndarray) -> Tuple[torch.Tensor, np.ndarray]:
+        img = letterbox(im0, self.img_size, stride=self.stride)[0]
+        img = img[:, :, ::-1].transpose(2, 0, 1)
+        img = np.ascontiguousarray(img)
+        img = torch.from_numpy(img).to(self.device).float() / 255.0
+        if img.ndimension() == 3:
+            img = img.unsqueeze(0)
+        return img, im0
+    
+    def detect(self, image: np.ndarray) -> List[DetectionResult]:
+        if self.model is None:
+            if not self.load_model():
+                return []
         
-        # Create dummy input
-        dummy_input = torch.randn(1, 3, self.input_size[0], self.input_size[1]).to(self.device)
+        img, im0 = self.preprocess(image)
         
-        # Warmup iterations
         with torch.no_grad():
-            for _ in range(warmup_iterations):
-                _ = self.model(dummy_input)
+            pred = self.model(img, augment=False)[0]
+        pred = non_max_suppression(pred, self.confidence_threshold, self.iou_threshold, classes=None, agnostic=False)
         
-        self.warmup_complete = True
-        logger.info("Model warmup complete")
-    
-    def preprocess(self, image: np.ndarray) -> torch.Tensor:
-        """Preprocess image for YOLO inference"""
-        # Resize to model input size
-        resized = cv2.resize(image, self.input_size)
-        
-        # Convert to tensor and normalize
-        tensor = torch.from_numpy(resized).float()
-        tensor = tensor.permute(2, 0, 1)  # HWC to CHW
-        tensor = tensor / 255.0  # Normalize to [0, 1]
-        
-        # Add batch dimension
-        tensor = tensor.unsqueeze(0)
-        
-        return tensor.to(self.device)
-    
-    def postprocess(self, 
-                   predictions: torch.Tensor, 
-                   original_shape: Tuple[int, int]) -> List[DetectionResult]:
-        """Postprocess model predictions"""
         results = []
-        
-        if predictions is None or len(predictions) == 0:
-            return results
-        
-        # Convert predictions to detection results
-        for pred in predictions[0]:  # First batch
-            if len(pred) >= 6:  # x1, y1, x2, y2, confidence, class
-                x1, y1, x2, y2, conf, cls = pred[:6]
-                
-                if conf < self.confidence_threshold:
-                    continue
-                
-                # Convert to original image coordinates
-                orig_h, orig_w = original_shape
-                scale_x = orig_w / self.input_size[0]
-                scale_y = orig_h / self.input_size[1]
-                
-                x1 = int(x1 * scale_x)
-                y1 = int(y1 * scale_y)
-                x2 = int(x2 * scale_x)
-                y2 = int(y2 * scale_y)
-                
+        for det in pred:
+            if not len(det):
+                continue
+            
+            det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+            
+            for *xyxy, conf, cls in reversed(det):
                 class_id = int(cls)
                 class_name = self.class_names[class_id] if class_id < len(self.class_names) else str(class_id)
-                
                 results.append(DetectionResult(
-                    bbox=(x1, y1, x2, y2),
+                    bbox=(float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3])),
                     confidence=float(conf),
                     class_id=class_id,
                     class_name=class_name
@@ -171,148 +118,27 @@ class YOLODetector:
         
         return results
     
-    def detect(self, image: np.ndarray) -> List[DetectionResult]:
-        """
-        Detect objects in single image
+    def detect_with_vis(self, image: np.ndarray, output_path: str = None):
+        from utils.plots import plot_one_box
         
-        Args:
-            image: Input image (BGR format)
-            
-        Returns:
-            List of detection results
-        """
-        if not self.model:
-            raise RuntimeError("Model not loaded")
+        results = self.detect(image)
         
-        if not self.warmup_complete:
-            logger.warning("Model not warmed up - performance may be suboptimal")
+        for det in results:
+            label = f"{det.class_name} {det.confidence:.2f}"
+            plot_one_box(det.bbox, image, label=label, color=(0, 255, 0), line_thickness=1)
         
-        original_shape = image.shape[:2]  # Height, Width
+        if output_path:
+            cv2.imwrite(output_path, image)
         
-        try:
-            # Preprocess
-            input_tensor = self.preprocess(image)
-            
-            # Inference
-            with torch.no_grad():
-                start_time = time.time()
-                predictions = self.model(input_tensor)
-                inference_time = time.time() - start_time
-            
-            # Postprocess
-            results = self.postprocess(predictions, original_shape)
-            
-            logger.debug(f"Detection completed: {len(results)} objects, "
-                       f"inference time: {inference_time:.3f}s")
-            
-            return results
-            
-        except Exception as e:
-            logger.error(f"Detection failed: {e}")
-            return []
-    
-    def detect_batch(self, images: List[np.ndarray]) -> List[List[DetectionResult]]:
-        """
-        Detect objects in batch of images
-        
-        Args:
-            images: List of input images
-            
-        Returns:
-            List of detection results for each image
-        """
-        if not self.model:
-            raise RuntimeError("Model not loaded")
-        
-        batch_results = []
-        
-        for image in images:
-            results = self.detect(image)
-            batch_results.append(results)
-        
-        return batch_results
-    
-    def apply_nms(self, results: List[DetectionResult]) -> List[DetectionResult]:
-        """Apply Non-Maximum Suppression"""
-        if not results:
-            return []
-        
-        # Simple NMS implementation
-        if len(results) <= 1:
-            return results
-        
-        # Sort by confidence (descending)
-        results.sort(key=lambda x: x.confidence, reverse=True)
-        
-        filtered_results = []
-        
-        while results:
-            # Take the highest confidence detection
-            best = results.pop(0)
-            filtered_results.append(best)
-            
-            # Remove overlapping detections
-            results = [
-                det for det in results 
-                if self._iou(best.bbox, det.bbox) < self.iou_threshold
-            ]
-        
-        logger.debug(f"NMS: {len(results)} → {len(filtered_results)} detections")
-        
-        return filtered_results
-    
-    def _iou(self, box1: Tuple[float, float, float, float], 
-             box2: Tuple[float, float, float, float]) -> float:
-        """Calculate Intersection over Union"""
-        x1_1, y1_1, x2_1, y2_1 = box1
-        x1_2, y1_2, x2_2, y2_2 = box2
-        
-        # Calculate intersection area
-        x_left = max(x1_1, x1_2)
-        y_top = max(y1_1, y1_2)
-        x_right = min(x2_1, x2_2)
-        y_bottom = min(y2_1, y2_2)
-        
-        if x_right < x_left or y_bottom < y_top:
-            return 0.0
-        
-        intersection = (x_right - x_left) * (y_bottom - y_top)
-        
-        # Calculate union area
-        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
-        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
-        union = area1 + area2 - intersection
-        
-        return intersection / union if union > 0 else 0.0
+        return results
     
     def get_model_info(self) -> Dict[str, Any]:
-        """Get model information"""
         return {
             "model_path": str(self.model_path),
-            "device": self.device,
+            "device": str(self.device if self.device else "none"),
             "confidence_threshold": self.confidence_threshold,
             "iou_threshold": self.iou_threshold,
-            "input_size": self.input_size,
+            "img_size": self.img_size,
             "class_names": self.class_names,
-            "warmup_complete": self.warmup_complete,
             "model_loaded": self.model is not None
         }
-    
-    def set_confidence_threshold(self, threshold: float):
-        """Set confidence threshold"""
-        self.confidence_threshold = max(0.0, min(1.0, threshold))
-        if self.model:
-            self.model.conf = self.confidence_threshold
-        logger.info(f"Confidence threshold set to: {self.confidence_threshold}")
-    
-    def set_iou_threshold(self, threshold: float):
-        """Set IoU threshold"""
-        self.iou_threshold = max(0.0, min(1.0, threshold))
-        if self.model:
-            self.model.iou = self.iou_threshold
-        logger.info(f"IoU threshold set to: {self.iou_threshold}")
-    
-    def __del__(self):
-        """Cleanup"""
-        if self.model:
-            del self.model
