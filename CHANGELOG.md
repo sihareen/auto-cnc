@@ -1,7 +1,6 @@
 # Changelog
 
 ### [2026-04-14]
-- **feat(ui):** add HOME Z button for Z-axis only homing
 - **feat(ui):** jog-step dropdown (0.1, 0.5, 1, 5 mm) instead of manual input
 - **fix(workflow):** add safe position fallback when homing fails (error 8)
 - **docs:** update README dengan 3-click workflow, jog offset adjustment, dan konfigurasi file

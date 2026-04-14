@@ -778,18 +778,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     system_state["status"] = "NOT_READY"
                 await broadcast_state()
 
-            elif cmd == "home_z":
-                if cnc_controller and cnc_controller.is_connected:
-                    system_state["status"] = "HOMING"
-                    await broadcast_state()
-                    homed = await asyncio.to_thread(cnc_controller.home_axis, "Z", True, 60.0)
-                    system_state["status"] = "IDLE" if homed else "ERROR"
-                    if not homed:
-                        system_state["last_error"] = "Home Z failed or timeout"
-                else:
-                    system_state["status"] = "NOT_READY"
-                await broadcast_state()
-
             elif cmd == "standby":
                 if cnc_controller and cnc_controller.is_connected:
                     system_state["status"] = "STANDBY_MOVING"
