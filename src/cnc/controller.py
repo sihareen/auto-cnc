@@ -435,7 +435,11 @@ class GRBLController:
         """
         if not all(a in "XYZ" for a in axis):
             raise ValueError("Axis must be one of X, Y, Z, or combination")
-            
+        
+        # Unlock GRBL before homing (required if in alarm state)
+        self.queue_command("$X")
+        time.sleep(0.2)
+        
         # GRBL 1.1 standard homing command is `$H` (without axis suffix).
         command = "$H"
         self.queue_command(command)
