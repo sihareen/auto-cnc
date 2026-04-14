@@ -659,38 +659,18 @@ async def continue_drill_workflow():
         system_state["status"] = "COMPLETE"
         await broadcast_state()
 
-        # End flow: return machine to HOME
-        system_state["status"] = "HOMING"
+        # End flow: return machine to STANDBY position
+        system_state["status"] = "STANDBY"
         await broadcast_state()
         
-        # Unlock before homing
-        await asyncio.to_thread(cnc_controller.unlock)
-        await asyncio.sleep(0.3)
-        
-        ok_home = await asyncio.to_thread(cnc_controller.home_axis, "XYZ", True, 120.0)
-        if ok_home:
-            status_now = await asyncio.to_thread(cnc_controller.query_status_once, 1.0)
-            pos = status_now.get("position", {})
-            system_state["position"] = {
-                "x": float(pos.get("x", 0.0)),
-                "y": float(pos.get("y", 0.0)),
-                "z": float(pos.get("z", 0.0)),
-            }
-            system_state["status"] = "HOME"
+        ok_standby = await asyncio.to_thread(cnc_controller.move_to, STANDBY_X, STANDBY_Y, 10.0, 1000, True, 30.0)
+        if ok_standby:
+            system_state["position"] = {"x": STANDBY_X, "y": STANDBY_Y, "z": 10.0}
+            system_state["status"] = "IDLE"
             system_state["last_error"] = None
         else:
-            # Fallback: move to safe position if homing fails
-            logger.warning("Homing failed, moving to safe position instead")
-            ok_safe = await asyncio.to_thread(
-                cnc_controller.move_to, STANDBY_X, STANDBY_Y, 10.0, 1000, True, 30.0
-            )
-            if ok_safe:
-                system_state["position"] = {"x": STANDBY_X, "y": STANDBY_Y, "z": 10.0}
-                system_state["status"] = "HOME"
-                system_state["last_error"] = "Homing failed - used safe position"
-            else:
-                system_state["status"] = "ERROR"
-                system_state["last_error"] = "Homing and safe position move both failed"
+            system_state["status"] = "ERROR"
+            system_state["last_error"] = "Failed to move to standby after drill"
         system_state["start_state"] = "idle"
         pending_drill_points = []
         await broadcast_state()
