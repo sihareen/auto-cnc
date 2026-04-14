@@ -177,40 +177,50 @@ ws.send(JSON.stringify({command: 'status'}));
 
 ## Workflow Execution
 
-### Full Drill Workflow
+### 3-Click Drill Workflow
 
 ```
-1. CAMERA CAPTURE
-   └─► get_frame() → numpy array (720x1280)
+CLICK 1: START
+└─► CNC move ke standby (Z-up, XY standby)
+└─► Status: STANDBY_READY
 
-2. YOLOv7 DETECTION
-   └─► detector.detect(frame) → List[DetectionResult]
-       └─► 121 objects detected (hole_middle_1, dll)
+CLICK 2: START
+└─► Camera capture
+└─► YOLOv7 detection (pixel coordinates)
+└─► Affine transform (pixel → machine mm)
+└─► Save points ke config/last_job_points.json
+└─► Move ke first padhole, pause
+└─► Status: PAUSED_AT_PADHOLE
 
-3. COORDINATE TRANSFORM
-   └─► transform_detections(pixel_points)
-       └─► Affine matrix from calibration
-       └─► 121 machine coordinates (mm)
+CLICK 3 (optional): JOG
+└─► Jog manual x/y/z untuk koreksi posisi drill
+└─► Offset diakumulasi di jog_offset
+└─► Save work_points ke config/work_points.json
 
-4. JOB CREATION
-   └─► job_manager.create_job(coords)
-       └─► Path optimization (nearest neighbor)
-       └─► G-Code generation
-
-5. CNC EXECUTION
-   └─► For each point:
-       ├─► cnc.move_to(x, y, z=5, feedrate=1000)
-       ├─► cnc.move_to(z=-1.5, feedrate=300)  # Drill down
-       └─► cnc.move_to(z=5, feedrate=1000)    # Retract
+CLICK 3: START (continue)
+└─► Work points = original points + jog_offset
+└─► For each point:
+    ├─► cnc.move_to(x + offset_x, y + offset_y, z_clear + offset_z)
+    ├─► cnc.move_to(z_drill + offset_z)  # -1.5mm
+    └─► cnc.move_to(z_clear + offset_z)  # 5.0mm
+└─► Return HOME
 ```
 
 ### State Machine States
 
 ```
-IDLE → HOMING → ACQUIRING → TRANSFORM → DRILLING → COMPLETE
-         ↓         ↓           ↓           ↓
-       (done)   (detection) (transform)  (drilling)
+IDLE → STANDBY → STANDBY_READY → ACQUIRING → TRANSFORM → PAUSED_AT_PADHOLE → DRILLING → HOME
 ```
+
+### 3-Click Drill Workflow
+
+| Click | Status | Action |
+|-------|--------|--------|
+| 1 | STANDBY_READY | CNC move ke standby (Z-up, XY standby) |
+| 2 | PAUSED_AT_PADHOLE | Capture, YOLOv7 detect, move ke first padhole (bbox merah), pause |
+| 3 | DRILLING→HOME | Drill semua hole, return HOME |
+
+**Jog Offset Adjustment:** Saat PAUSED_AT_PADHOLE, operator bisa jog manual (x/y/z) untuk koreksi. Offset diakumulasi dan diterapkan ke semua drill points.
 
 ---
 
@@ -223,6 +233,14 @@ IDLE → HOMING → ACQUIRING → TRANSFORM → DRILLING → COMPLETE
 | `best.pt` | YOLOv7 trained model |
 | `config/calibration_affine.json` | Affine transformation matrix |
 | `yolov7/` | YOLOv7 source code (models, utils) |
+
+### Runtime Config Files
+
+| File | Purpose |
+|------|---------|
+| `config/last_job_points.json` | Last captured drill points |
+| `config/work_points.json` | Work points with jog offset |
+| `config/calibration_runtime_offset.json` | Runtime XY offset from calibration |
 
 ### Calibration File Structure (`config/calibration_affine.json`)
 
@@ -297,3 +315,4 @@ print(f"Detected: {len(results)}")
 4. **Detection Threshold**: confidence=0.25, iou=0.45
 5. **Drill Depth**: -1.5mm (Z axis)
 6. **Clearance Height**: 5.0mm (Z axis)
+7. **Jog Offset**: Accumulated during PAUSED_AT_PADHOLE, applied to all drill coordinates

@@ -36,57 +36,37 @@ Langkah:
 - Place PCB di workspace CNC
 - Pastikan PCB sudah di-clamp dengan aman
 
-### Tahap 2: Home/Standby
+### Tahap 2: Click 1 - Standby
 
-CNC kembali ke posisi awal (home) dengan Y-axis ditinggikan (Y-90) untuk clearance.
+Klik **START** pertama:
+- CNC move ke posisi standby (Z-up dulu, lalu XY standby)
+- **Tujuannya:** Spindle naik dulu untuk clearance, baru bergerak ke posisi standby
 
-**Tujuannya:** Agar spindle tidak Membentur PCB saat bergerak
+### Tahap 3: Click 2 - Capture & Pause
 
-### Tahap 3: Ambil Foto & Deteksi
+Klik **START** kedua:
+- Kamera ambil foto PCB
+- YOLOv7 detect semua padhole
+- Koordinat piksel → transformasi ke koordinat mesin (mm)
+- CNC move ke padhole pertama (bbox merah di overlay)
+- **PAUSE** di sini
 
-Kamera mengambil foto PCB, lalu YOLOv7 mendeteksi semua lubang pad.
+**Output:** Daftar koordinat lubang, CNC berhenti di hole pertama
 
-**Output:** Daftar koordinat lubang dalam piksel (x, y)
+### Tahap 4: Click 3 - Jog & Drill
 
-### Tahap 4: Transformasi Koordinat
+Opsi A: **Klik START** (langsung drill semua hole)
 
-Koordinat piksel diubah ke koordinat millimeter menggunakan matriks affine dari calibration.
+Opsi B: **Jog Manual** dulu untuk koreksi:
+- Jog X/Y/Z untuk geser posisi drill sampai tepat di target
+- Setiap jog offset diakumulasi
+- Klik **START** → drill pakai work coordinate (original + offset)
 
-```
-Koordinat Piksel (dari YOLOv7)
-        ↓
-Matriks Affine
-        ↓
-Koordinat MM (untuk CNC)
-```
+### Tahap 5: Selesai
 
-**Kenapa perlu transformasi?**
-- Kamara melihat dari atas (bidang 2D)
-- CNC mengebor di bidang XY dengan koordinat absolut
-- Antara kamera dan CNC ada perbedaan rotasi, skala, dan posisi
-
-**Matriks yang digunakan:**
-- Berasal dari `calibration_affine.json`
-- Reprojection error: ~1.22mm (tingkat ketelitian)
-
-### Tahap 5: Generate G-Code
-
-Dari koordinat yang sudah ditransformasi, dibuat G-Code untuk drilling.
-
-**Includes:**
-- Urutan pengeboran (terdekat dulu untuk efisiensi)
-- Kedalaman drilling
-- Kecepatan spindle
-- Clearance antar lubang
-
-### Tahap 6: Eksekusi Drilling
-
-CNC mengebor lubang satu per satu sesuai G-Code yang sudah生成.
-
-**Selama proses:**
-- Operator bisa monitor via Web UI
-- Bisa pause/stop jika perlu
-- Progress ditampilkan realtime
+Setelah drilling selesai:
+- CNC return ke HOME
+- Status: IDLE
 
 ---
 
@@ -95,22 +75,24 @@ CNC mengebor lubang satu per satu sesuai G-Code yang sudah生成.
 Sistem bekerja dalam beberapa state:
 
 ```
-IDLE (Siap)
+IDLE
     ↓ Start
-HOMING (Ke posisi awal)
+STANDBY (Y-up, XY standby)
+    ↓ Start
+ACQUIRING (capture & detect)
     ↓
-ACQUIRING (Ambil foto & deteksi)
+TRANSFORM (pixel → mm)
     ↓
-TRANSFORM (Ubah koordinat)
+PAUSED_AT_PADHOLE (bbox merah, siap koreksi jog)
+    ↓ Start/Jog
+DRILLING (mengebor satu-satu)
     ↓
-READY (Siap drilling)
-    ↓ Start Drill
-DRILLING (Mengebor)
-    ↓
-COMPLETE (Selesai)
+HOME (kembali ke origin)
     ↓
 IDLE
 ```
+
+**Jog Offset:** Saat PAUSED_AT_PADHOLE, operator bisa jog x/y/z. Offset diakumulasi dan dipakai saat drilling.
 
 **Error states:**
 - ERROR_DETECTION: Tidak ada lubang terdeteksi
@@ -236,18 +218,23 @@ Output G-Code (mm):
 
 ```
 1. Operator place PCB → Clamp
-2. Klik "Start" di Web UI
-3. CNC home (Y-90)
-4. Kamera capture → YOLOv7 detect
-5. Koordinat piksel → transform ke mm (affine)
-6. Generate G-Code
-7. CNC drill satu-satu
-8. Selesai → Alert operator
-9. Kembali ke IDLE
+2. Klik "START" → CNC move standby
+3. Klik "START" → Capture, detect, move ke first padhole, PAUSE
+4. [Optional] Jog manual x/y/z untuk koreksi
+5. Klik "START" → Drill semua hole (dengan offset jika ada), return HOME
+6. Selesai → CNC HOME, kembali ke IDLE
 ```
+
+**3-Click Workflow:**
+| Click | Action |
+|-------|--------|
+| 1 | Move ke standby |
+| 2 | Capture & pause di first padhole |
+| 3 | Drill (atau jog dulu baru drill) |
 
 Sistem ini semi-otomatis: operator tetap perlu:
 - Place/clamp PCB
-- Klik start
+- Klik start 3x
 - Monitor progress
 - Handle error jika ada
+- Jog koreksi jika perlu

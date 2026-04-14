@@ -52,10 +52,11 @@ Sistem otomatisasi CNC Drill berbasis YOLOv7 untuk deteksi dan pengeboran pad ho
 
 | State | Nama | Deskripsi |
 |-------|------|-----------|
-| 1 | Home/Standby | Y-90 untuk clearance |
+| 1 | Standby | CNC move ke standby (Z-up, XY standby) |
 | 2 | Visual Acquisition | Capture frame & YOLOv7 inference |
 | 3 | Coordinate Transformation | Inference result → Affine → G-Code |
-| 4 | Sequential Drilling | Eksekusi drilling bertahap |
+| 4 | Paused at Padhole | Pause di first padhole, siap jog koreksi |
+| 5 | Sequential Drilling | Eksekusi drilling bertahap (dengan jog offset jika ada) |
 
 ---
 
@@ -280,41 +281,45 @@ Sistem otomatisasi CNC Drill berbasis YOLOv7 untuk deteksi dan pengeboran pad ho
 # FSM State Diagram
 
 ```
-        ┌──────────────────────────────────────────┐
-        │                                          │
-        ▼                                          │
-    ┌───────┐     start     ┌────────┐            │
-    │ IDLE  │ ───────────► │ HOMING  │            │
-    └───────┘              └────┬────┘            │
-                                 │                 │
-                                 ▼                 │
-                         ┌─────────────┐          │
-                         │ ACQUIRING   │          │
-                         └──────┬──────┘          │
-                                │                  │
-                    detection   ▼                  │
-                         ┌────────────┐            │
-                    ┌───┤ TRANSFORM │ ◄───┐      │
-                    │   └────────────┘     │      │
-                    │          │            │      │
-                    │          ▼            │      │
-                    │   ┌───────────┐     │      │
-                    │   │ READY     │     │      │
-                    │   └─────┬─────┘     │      │
-                    │         │           │      │
-              start │         ▼           │      │
-              drill│   ┌───────────┐     │      │
-                    │   │ DRILLING │     │      │
-                    │   └─────┬─────┘     │      │
-                    │         │           │      │
-                    │         └───────┐   │      │
-                    │               │     │      │
-                    │               ▼   │      │
-                    │         ┌──────────┐ │      │
-                    └────────►│ COMPLETE│─┘      │
-                              └──────────┘       │
-                                  │              │
-                                  └──────────────┘
+        ┌──────────────────────────────────────────────────────────┐
+        │                                                              │
+        ▼                                                              │
+    ┌───────┐     start     ┌──────────────┐                          │
+    │ IDLE  │ ───────────► │   STANDBY    │                          │
+    └───────┘              └──────┬───────┘                          │
+                                  │ start                            │
+                                  ▼                                  │
+                          ┌──────────────┐                          │
+                          │ACQUIRING    │                          │
+                          │(capture &   │                          │
+                          │detect)       │                          │
+                          └──────┬───────┘                          │
+                                 │ detection                         │
+                                 ▼                                  │
+                          ┌──────────────┐                          │
+                          │ TRANSFORM   │                          │
+                          │(pixel → mm) │                          │
+                          └──────┬───────┘                          │
+                                 │                                   │
+                                 ▼                                   │
+                    ┌────────────────────────┐                       │
+                    │   PAUSED_AT_PADHOLE   │◄──── jog x/y/z       │
+                    │ (bbox merah, ready    │                       │
+                    │  untuk koreksi)       │                       │
+                    └──────────┬────────────┘                       │
+                               │ start                              │
+                               ▼                                    │
+                    ┌────────────────────────┐                      │
+                    │      DRILLING         │                      │
+                    │  (semua hole + offset)│                      │
+                    └──────────┬────────────┘                      │
+                               │ complete                           │
+                               ▼                                    │
+                    ┌────────────────────────┐                      │
+                    │        HOME           │                      │
+                    └──────────┬────────────┘                      │
+                               │                                    │
+                               └──────────────────────────────────┘
 ```
 
 ---
