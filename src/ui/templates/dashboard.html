@@ -713,7 +713,8 @@
                         <div class="controls">
                             <button class="btn btn-green" data-requires-ws id="btn-start">START</button>
                             <button class="btn btn-red" data-requires-ws id="btn-stop">STOP</button>
-                            <button class="btn btn-blue" data-requires-ws id="btn-home">HOME</button>
+                            <button class="btn btn-blue" data-requires-ws id="btn-home">HOME XYZ</button>
+                            <button class="btn btn-blue" data-requires-ws id="btn-home-z">HOME Z</button>
                             <button class="btn btn-blue" data-requires-ws id="btn-standby">STANDBY</button>
                             <button class="btn btn-amber" data-requires-ws id="btn-reset">RESET</button>
                             <button class="btn btn-amber" data-requires-ws id="btn-reset-offset">RESET OFFSET</button>
@@ -978,6 +979,10 @@
 
         document.getElementById('btn-home').onclick = function() {
             sendCommand({ command: 'home' }, 'Home command sent');
+        };
+
+        document.getElementById('btn-home-z').onclick = function() {
+            sendCommand({ command: 'home_z' }, 'Home Z command sent');
         };
 
         document.getElementById('btn-standby').onclick = function() {
