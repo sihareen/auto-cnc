@@ -49,7 +49,7 @@ jog_offset: Dict[str, float] = {"x": 0.0, "y": 0.0, "z": 0.0}
 
 STANDBY_X = 85.0
 STANDBY_Y = -95.0
-STANDBY_Z = 5.0
+STANDBY_Z = 0.0
 TEMP_DIR = Path("temp")
 JOB_OVERLAY_IMAGE_PATH = TEMP_DIR / "overlay.jpg"
 CALIBRATE_IMAGE_PATH = TEMP_DIR / "calibrate.jpg"
@@ -731,7 +731,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     workflow_task = asyncio.create_task(continue_drill_workflow())
                 elif start_state == "standby_ready":
                     workflow_task = asyncio.create_task(run_drill_workflow())
-                elif not start_state:
+                elif start_state == "idle" or not start_state:
                     if cnc_controller and cnc_controller.is_connected:
                         system_state["status"] = "STANDBY_MOVING"
                         await broadcast_state()
