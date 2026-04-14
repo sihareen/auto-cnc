@@ -659,7 +659,7 @@ async def continue_drill_workflow():
         system_state["status"] = "COMPLETE"
         await broadcast_state()
 
-        # End flow: return machine to HOME.
+        # End flow: return machine to safe position (fallback when homing fails)
         system_state["status"] = "HOMING"
         await broadcast_state()
         ok_home = await asyncio.to_thread(cnc_controller.home_axis, "XYZ", True, 120.0)
@@ -674,8 +674,18 @@ async def continue_drill_workflow():
             system_state["status"] = "HOME"
             system_state["last_error"] = None
         else:
-            system_state["status"] = "ERROR"
-            system_state["last_error"] = "Post-drill homing failed"
+            # Fallback: move to safe position if homing fails
+            logger.warning("Homing failed, moving to safe position instead")
+            ok_safe = await asyncio.to_thread(
+                cnc_controller.move_to, STANDBY_X, STANDBY_Y, 10.0, 1000, True, 30.0
+            )
+            if ok_safe:
+                system_state["position"] = {"x": STANDBY_X, "y": STANDBY_Y, "z": 10.0}
+                system_state["status"] = "HOME"
+                system_state["last_error"] = "Homing failed - used safe position"
+            else:
+                system_state["status"] = "ERROR"
+                system_state["last_error"] = "Homing and safe position move both failed"
         system_state["start_state"] = "idle"
         pending_drill_points = []
         await broadcast_state()
