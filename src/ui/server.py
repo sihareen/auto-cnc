@@ -659,9 +659,14 @@ async def continue_drill_workflow():
         system_state["status"] = "COMPLETE"
         await broadcast_state()
 
-        # End flow: return machine to safe position (fallback when homing fails)
+        # End flow: return machine to HOME
         system_state["status"] = "HOMING"
         await broadcast_state()
+        
+        # Unlock before homing
+        await asyncio.to_thread(cnc_controller.unlock)
+        await asyncio.sleep(0.3)
+        
         ok_home = await asyncio.to_thread(cnc_controller.home_axis, "XYZ", True, 120.0)
         if ok_home:
             status_now = await asyncio.to_thread(cnc_controller.query_status_once, 1.0)
