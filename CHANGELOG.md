@@ -1,10 +1,41 @@
 # Changelog
 
+### [2026-04-14]
+- **feat(ui):** tambah kontrol STANDBY di dashboard dan integrasi command backend untuk safe move ke koordinat standby (Z-up lalu XY)
+- **feat(cnc):** integrasikan RESET ke recovery hardware (emergency stop + unlock/home/clearance) agar tidak hanya reset state aplikasi
+- **feat(workflow):** ubah alur START menjadi 2 tahap (klik 1 berhenti di padhole pertama, klik 2 lanjut drilling)
+- **feat(workflow):** ubah alur operasi agar capture dilakukan setelah mesin di standby dan return ke standby setelah job selesai
+- **feat(vision):** simpan otomatis gambar capture mentah dan hasil deteksi ke folder `temp/` dengan nama berbasis timestamp/job
+- **feat(ui):** tambah kontrol camera source (main camera + preview camera) dengan endpoint stream terpisah
+- **feat(ui):** tambah manual CNC jog control dan tombol RESET OFFSET
+- **feat(ui):** ubah tema dashboard ke dark mode
+- **refactor(ui):** pisahkan template HTML dashboard dari backend ke `src/ui/templates/dashboard.html`
+- **refactor(calibrate):** pindahkan script kalibrasi ke folder `calibrate/` dan urutkan nama file sesuai alur:
+	- `01_add_markers.py`
+	- `02_calibrate_from_markers.py`
+	- `03_calibrate_cli.py`
+	- `04_calibrate.py`
+- **feat(calibrate):** implement kalibrasi dinamis 1-20 titik dengan mode fitting adaptif:
+	- 1 titik: `translation`
+	- 2 titik: `similarity`
+	- >=3 titik: `affine`
+- **feat(calibrate):** simpan metadata `fit_mode` ke `config/calibration_affine.json`
+- **docs(calibrate):** tambah `README_Calibrate.md` berisi alur penggunaan dan penjelasan proses kalibrasi end-to-end
+- **fix(cnc):** ganti homing command ke `$H` untuk kompatibilitas GRBL
+- **fix(cnc):** perbaiki parser state GRBL untuk token seperti `Hold:0`
+- **fix(cnc):** perbaiki handling ACK/timeout homing agar lebih robust di variasi firmware/controller
+- **fix(jog):** ubah jalur jog ke perintah relatif signed GRBL (`G91 -> G1 -> G90`) agar nilai negatif/positif mengikuti arah perintah
+- **fix(ui):** koreksi mapping tombol MAJU/MUNDUR pada jog agar sesuai orientasi operator
+- **perf(startup):** optimasi startup dengan lazy-load model detector
+- **chore(cleanup):** pisahkan file non-product/non-calibration ke folder `useless/` dan rapikan berdasarkan kategori
+- **chore(cleanup):** hapus runner non-GUI `run.py` dan `run_drill_workflow.py` agar fokus ke jalur GUI dashboard
+
 ### [2026-04-13]
 - **feat:** add full drill workflow integration (run_drill_workflow.py)
 - **refactor:** update server.py dengan full drill workflow pada command 'start'
 - **feat:** integrate YOLOv7 pipeline from detect_test.py to src/vision/detector.py
 - **fix:** patch torch.load for PyTorch 2.6+ compatibility
+- **fix:** call cnc_controller.connect() on init (previously never connected)
 - **docs:** buat STRUCTURE.md dengan dokumentasi alur sistem dan script roles
 
 ### [2026-04-10]

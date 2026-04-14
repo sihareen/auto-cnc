@@ -3,10 +3,10 @@ Calibration tool berbasis CLI (tanpa GUI)
 Untuk sistem headless atau remote
 
 Usage:
-    python calibrate_cli.py --add           # Tambah titik kalibrasi
-    python calibrate_cli.py --calculate    # Hitung matrix
-    python calibrate_cli.py --save         # Simpan hasil
-    python calibrate_cli.py --verify        # Verifikasi
+    python calibrate/03_calibrate_cli.py --add           # Tambah titik kalibrasi
+    python calibrate/03_calibrate_cli.py --calculate    # Hitung matrix
+    python calibrate/03_calibrate_cli.py --save         # Simpan hasil
+    python calibrate/03_calibrate_cli.py --verify        # Verifikasi
 """
 import argparse
 import json
@@ -17,12 +17,16 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+MIN_CALIB_POINTS = 1
+MAX_CALIB_POINTS = 20
+
 class CLICalibrator:
     def __init__(self, calibration_path: str = "config/calibration_affine.json"):
         self.calibration_path = Path(calibration_path)
         self.src_points_px = []
         self.dst_points_mm = []
         self.matrix = None
+        self.fit_mode = "unknown"
         self.load_existing()
     
     def load_existing(self):
@@ -31,12 +35,16 @@ class CLICalibrator:
             with open(self.calibration_path) as f:
                 data = json.load(f)
             self.matrix = np.array(data['matrix'])
+            self.fit_mode = data.get("fit_mode", "affine")
             self.src_points_px = [tuple(p) for p in data['src_points_px']]
             self.dst_points_mm = [tuple(p) for p in data['dst_points_mm']]
             logger.info(f"Loaded existing calibration with {len(self.src_points_px)} points")
     
     def add_point(self, px_x: float, px_y: float, mm_x: float, mm_y: float):
         """Add calibration point"""
+        if len(self.src_points_px) >= MAX_CALIB_POINTS:
+            print(f"ERROR: Maksimal {MAX_CALIB_POINTS} titik kalibrasi")
+            return
         self.src_points_px.append((px_x, px_y))
         self.dst_points_mm.append((mm_x, mm_y))
         print(f"✓ Added point {len(self.src_points_px)}: pixel=({px_x},{px_y}) -> mm=({mm_x},{mm_y})")
@@ -60,38 +68,66 @@ class CLICalibrator:
         print(f"{'='*60}")
     
     def calculate_matrix(self):
-        """Calculate affine transformation matrix"""
-        if len(self.src_points_px) < 3:
-            print("ERROR: Minimal 3 titik diperlukan!")
+        """Calculate adaptive transform: translation(1), similarity(2), affine(>=3)."""
+        point_count = len(self.src_points_px)
+        if point_count < MIN_CALIB_POINTS:
+            print(f"ERROR: Minimal {MIN_CALIB_POINTS} titik diperlukan!")
             return False
-        
-        # Build system of equations
-        A = []
-        B = []
-        
-        for (px_x, px_y), (mm_x, mm_y) in zip(self.src_points_px, self.dst_points_mm):
-            A.append([px_x, px_y, 1, 0, 0, 0])
-            A.append([0, 0, 0, px_x, px_y, 1])
-            B.append(mm_x)
-            B.append(mm_y)
-        
-        A = np.array(A)
-        B = np.array(B)
-        
-        params, _, _, _ = np.linalg.lstsq(A, B, rcond=None)
-        
-        self.matrix = np.array([
-            [params[0], params[1], params[2]],
-            [params[3], params[4], params[5]]
-        ])
-        
+
+        src = np.array(self.src_points_px, dtype=np.float64)
+        dst = np.array(self.dst_points_mm, dtype=np.float64)
+
+        if point_count == 1:
+            tx = float(dst[0, 0] - src[0, 0])
+            ty = float(dst[0, 1] - src[0, 1])
+            self.matrix = np.array([[1.0, 0.0, tx], [0.0, 1.0, ty]], dtype=np.float64)
+            self.fit_mode = "translation"
+        elif point_count == 2:
+            v = src[1] - src[0]
+            w = dst[1] - dst[0]
+            denom = float(v[0] * v[0] + v[1] * v[1])
+            if denom < 1e-12:
+                print("ERROR: Dua titik pixel terlalu berdekatan")
+                return False
+
+            a = float((w[0] * v[0] + w[1] * v[1]) / denom)
+            b = float((w[1] * v[0] - w[0] * v[1]) / denom)
+
+            tx = float(dst[0, 0] - (a * src[0, 0] - b * src[0, 1]))
+            ty = float(dst[0, 1] - (b * src[0, 0] + a * src[0, 1]))
+
+            self.matrix = np.array([[a, -b, tx], [b, a, ty]], dtype=np.float64)
+            self.fit_mode = "similarity"
+        else:
+            # Build system of equations
+            A = []
+            B = []
+
+            for (px_x, px_y), (mm_x, mm_y) in zip(self.src_points_px, self.dst_points_mm):
+                A.append([px_x, px_y, 1, 0, 0, 0])
+                A.append([0, 0, 0, px_x, px_y, 1])
+                B.append(mm_x)
+                B.append(mm_y)
+
+            A = np.array(A)
+            B = np.array(B)
+
+            params, _, _, _ = np.linalg.lstsq(A, B, rcond=None)
+
+            self.matrix = np.array([
+                [params[0], params[1], params[2]],
+                [params[3], params[4], params[5]]
+            ])
+            self.fit_mode = "affine"
+
         # Calculate error
         avg_error, per_errors = self.calculate_error()
-        
+
         print(f"\n{'='*60}")
-        print(f"AFFINE MATRIX CALCULATED")
+        print(f"CALIBRATION MATRIX CALCULATED")
         print(f"{'='*60}")
-        print(f"\nMatrix (2x3):")
+        print(f"\nMode: {self.fit_mode}")
+        print(f"Matrix (2x3):")
         print(f"  [{self.matrix[0,0]:.10e}, {self.matrix[0,1]:.10e}, {self.matrix[0,2]:.10e}]")
         print(f"  [{self.matrix[1,0]:.10e}, {self.matrix[1,1]:.10e}, {self.matrix[1,2]:.10e}]")
         print(f"\nReprojection Error:")
@@ -99,7 +135,7 @@ class CLICalibrator:
         print(f"  Min: {min(per_errors):.4f} mm")
         print(f"  Max: {max(per_errors):.4f} mm")
         print(f"{'='*60}")
-        
+
         return True
     
     def calculate_error(self):
@@ -132,6 +168,7 @@ class CLICalibrator:
         
         calibration_data = {
             "type": "affine2d",
+            "fit_mode": self.fit_mode,
             "source": {
                 "roi_points": "config/roi_points.json",
                 "mark_points": "config/markROI.txt"
@@ -223,6 +260,9 @@ def main():
                     
                     # Get mm coords from user
                     try:
+                        if len(calib.src_points_px) >= MAX_CALIB_POINTS:
+                            print(f"    -> Maksimal {MAX_CALIB_POINTS} titik, sisanya diabaikan")
+                            break
                         mm_x = float(input("    X (mm): "))
                         mm_y = float(input("    Y (mm): "))
                         calib.add_point(px_x, px_y, mm_x, mm_y)
@@ -267,6 +307,7 @@ def main():
         print("="*60)
         print("\nCurrent status:")
         print(f"  Points: {len(calib.src_points_px)}")
+        print(f"  Allowed points: {MIN_CALIB_POINTS}-{MAX_CALIB_POINTS}")
         print(f"  Matrix: {'Calculated' if calib.matrix is not None else 'Not calculated'}")
         
         if calib.matrix is not None:
@@ -274,12 +315,12 @@ def main():
             print(f"  Error: {avg_error:.4f} mm")
         
         print("\nUsage:")
-        print("  python calibrate_cli.py --add 640 360 171.5 -54.8   # Tambah titik")
-        print("  python calibrate_cli.py --list                        # Lihat titik")
-        print("  python calibrate_cli.py --calculate                  # Hitung matrix")
-        print("  python calibrate_cli.py --save                        # Simpan")
-        print("  python calibrate_cli.py --verify                      # Verifikasi")
-        print("  python calibrate_cli.py --clear                      # Clear semua")
+        print("  python calibrate/03_calibrate_cli.py --add 640 360 171.5 -54.8   # Tambah titik")
+        print("  python calibrate/03_calibrate_cli.py --list                        # Lihat titik")
+        print("  python calibrate/03_calibrate_cli.py --calculate                  # Hitung matrix")
+        print("  python calibrate/03_calibrate_cli.py --save                        # Simpan")
+        print("  python calibrate/03_calibrate_cli.py --verify                      # Verifikasi")
+        print("  python calibrate/03_calibrate_cli.py --clear                      # Clear semua")
         print("="*60)
 
 

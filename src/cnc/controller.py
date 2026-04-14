@@ -59,6 +59,41 @@ class GRBLController:
         self.stream_thread: Optional[threading.Thread] = None
         self.read_thread: Optional[threading.Thread] = None
         self.lock = threading.Lock()
+        self.last_status_timestamp = 0.0
+
+    def _wait_for_command_ack(self, command: Optional[str] = None, timeout: Optional[float] = None) -> bool:
+        """
+        Wait for GRBL acknowledgement for a queued command.
+
+        Returns:
+            bool: True when 'ok' is received, False for timeout/error response.
+        """
+        if timeout is None:
+            timeout = 120.0 if (command and command.startswith("$H")) else 5.0
+
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            remaining = max(0.05, end_time - time.time())
+            try:
+                response = self.response_queue.get(timeout=remaining)
+            except queue.Empty:
+                continue
+
+            normalized = response.strip().lower()
+            if normalized == "ok":
+                return True
+            if normalized.startswith("error") or normalized.startswith("alarm"):
+                logger.error(f"GRBL command rejected: {response}")
+                return False
+
+        if command and command.startswith("$H"):
+            # Some firmware/controllers may not emit a timely 'ok' for homing.
+            # Downstream wait_until_idle() is used for completion truth.
+            logger.warning("Timeout waiting homing ACK; continue with status-based wait")
+            return True
+
+        logger.error("Timeout waiting for GRBL acknowledgement")
+        return False
     
     def connect(self) -> bool:
         """
@@ -116,9 +151,10 @@ class GRBLController:
             raise ConnectionError("Not connected to GRBL")
         
         try:
-            cmd_bytes = (command + "\n").encode()
-            self.serial_conn.write(cmd_bytes)
-            self.serial_conn.flush()
+            with self.lock:
+                cmd_bytes = (command + "\n").encode()
+                self.serial_conn.write(cmd_bytes)
+                self.serial_conn.flush()
             logger.debug(f"Sent: {command}")
             return True
             
@@ -167,12 +203,43 @@ class GRBLController:
             try:
                 command = self.command_queue.get(timeout=0.1)
                 self._send_command(command)
+                if not self._wait_for_command_ack(command=command):
+                    logger.error(f"No ACK for command: {command}")
                 self.command_queue.task_done()
                 
             except queue.Empty:
                 continue
             except ConnectionError:
                 break
+
+    def wait_until_idle(self, timeout: float = 30.0, poll_interval: float = 0.05) -> bool:
+        """
+        Wait until controller queue is empty and GRBL state is Idle.
+
+        Returns:
+            bool: True when machine appears idle before timeout.
+        """
+        if not self.is_connected or not self.serial_conn:
+            return False
+
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            try:
+                with self.lock:
+                    # Realtime status query in GRBL protocol.
+                    self.serial_conn.write(b"?")
+                    self.serial_conn.flush()
+            except Exception as e:
+                logger.error(f"Status polling failed: {e}")
+                return False
+
+            if self.command_queue.empty() and self.machine_state == GRBLState.IDLE:
+                return True
+
+            time.sleep(poll_interval)
+
+        logger.error("Timeout waiting for CNC idle state")
+        return False
     
     def _read_responses(self):
         """Read and process responses from GRBL"""
@@ -194,8 +261,9 @@ class GRBLController:
         # Parse machine state
         if response.startswith("<"):
             self._parse_status_response(response)
-        
-        # Queue response for command tracking
+            return
+
+        # Queue non-status responses for command ACK tracking.
         self.response_queue.put(response)
     
     def _parse_status_response(self, status_str: str):
@@ -205,7 +273,7 @@ class GRBLController:
             parts = status_str[1:-1].split("|")
             
             # Parse machine state
-            state_str = parts[0]
+            state_str = parts[0].split(":", 1)[0]
             self.machine_state = GRBLState(state_str)
             
             # Parse machine position
@@ -217,9 +285,32 @@ class GRBLController:
                         self.current_position["x"] = float(coords[0])
                         self.current_position["y"] = float(coords[1])
                         self.current_position["z"] = float(coords[2])
+            self.last_status_timestamp = time.time()
             
         except (ValueError, IndexError) as e:
             logger.warning(f"Failed to parse status: {status_str}, error: {e}")
+
+    def query_status_once(self, timeout: float = 1.0) -> Dict[str, Any]:
+        """Request one GRBL realtime status packet and return latest status."""
+        if not self.is_connected or not self.serial_conn:
+            return self.get_status()
+
+        prev_ts = self.last_status_timestamp
+        try:
+            with self.lock:
+                self.serial_conn.write(b"?")
+                self.serial_conn.flush()
+        except Exception as e:
+            logger.error(f"Failed to request status: {e}")
+            return self.get_status()
+
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            if self.last_status_timestamp > prev_ts:
+                break
+            time.sleep(0.02)
+
+        return self.get_status()
     
     def queue_command(self, command: str, block: bool = False) -> str:
         """
@@ -272,8 +363,9 @@ class GRBLController:
                 except queue.Empty:
                     break
     
-    def move_to(self, x: Optional[float] = None, y: Optional[float] = None, 
-               z: Optional[float] = None, feedrate: int = 1000) -> bool:
+    def move_to(self, x: Optional[float] = None, y: Optional[float] = None,
+               z: Optional[float] = None, feedrate: int = 1000,
+               wait: bool = False, timeout: float = 30.0) -> bool:
         """
         Move to specified coordinates
         
@@ -297,9 +389,41 @@ class GRBLController:
             
         command = f"G1 {' '.join(coords)} F{feedrate}"
         self.queue_command(command)
+        if wait:
+            return self.wait_until_idle(timeout=timeout)
+        return True
+
+    def jog_relative(self,
+                     dx: Optional[float] = None,
+                     dy: Optional[float] = None,
+                     dz: Optional[float] = None,
+                     feedrate: int = 600,
+                     wait: bool = False,
+                     timeout: float = 30.0) -> bool:
+        """Run signed relative jog using GRBL incremental mode (G91)."""
+        coords = []
+        if dx is not None and abs(dx) >= 1e-9:
+            coords.append(f"X{dx:.3f}")
+        if dy is not None and abs(dy) >= 1e-9:
+            coords.append(f"Y{dy:.3f}")
+        if dz is not None and abs(dz) >= 1e-9:
+            coords.append(f"Z{dz:.3f}")
+
+        if not coords:
+            return False
+
+        # Ensure feedrate is always a positive integer accepted by GRBL.
+        feed = max(1, int(feedrate))
+
+        self.queue_command("G91")
+        self.queue_command(f"G1 {' '.join(coords)} F{feed}")
+        self.queue_command("G90")
+
+        if wait:
+            return self.wait_until_idle(timeout=timeout)
         return True
     
-    def home_axis(self, axis: str = "XYZ") -> bool:
+    def home_axis(self, axis: str = "XYZ", wait: bool = False, timeout: float = 60.0) -> bool:
         """
         Home specified axis
         
@@ -312,8 +436,11 @@ class GRBLController:
         if not all(a in "XYZ" for a in axis):
             raise ValueError("Axis must be one of X, Y, Z, or combination")
             
-        command = f"$H{axis}"
+        # GRBL 1.1 standard homing command is `$H` (without axis suffix).
+        command = "$H"
         self.queue_command(command)
+        if wait:
+            return self.wait_until_idle(timeout=timeout)
         return True
     
     def set_home_position(self, x: float = 0.0, y: float = 0.0, z: float = 0.0) -> bool:
@@ -326,4 +453,50 @@ class GRBLController:
         for cmd in commands:
             self.queue_command(cmd)
             
+        return True
+
+    def _drain_response_queue(self):
+        """Clear pending response messages to avoid stale ACK parsing."""
+        while not self.response_queue.empty():
+            try:
+                self.response_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def unlock(self, timeout: float = 5.0) -> bool:
+        """Unlock GRBL alarm/lock state using `$X`."""
+        if not self.is_connected:
+            return False
+
+        self._drain_response_queue()
+        self.queue_command("$X")
+        return self._wait_for_command_ack(timeout=timeout)
+
+    def recover_from_reset(self,
+                           clearance_z: float = 5.0,
+                           home_after_reset: bool = True,
+                           home_axis: str = "XYZ") -> bool:
+        """
+        Recover controller after reset/stop.
+
+        Sequence:
+        1) Emergency stop and clear queued commands
+        2) Optional homing
+        3) Move Z to clearance height
+        """
+        if not self.is_connected:
+            return False
+
+        self.emergency_stop()
+        time.sleep(0.2)
+
+        if home_after_reset:
+            if not self.home_axis(home_axis, wait=True, timeout=120.0):
+                logger.error("GRBL homing failed during reset recovery")
+                return False
+
+        if not self.move_to(z=clearance_z, feedrate=1000, wait=True, timeout=30.0):
+            logger.error("Failed to move Z to clearance during reset recovery")
+            return False
+
         return True

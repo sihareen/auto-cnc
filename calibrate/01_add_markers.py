@@ -3,8 +3,8 @@ Script untuk menambahkan marker pada gambar PCB
 dan mendapatkan pixel coordinates untuk kalibrasi
 
 Usage:
-    python add_markers.py camera_capture.jpg
-    python add_markers.py --image pcb.jpg --output markers.txt
+    python calibrate/01_add_markers.py camera_capture.jpg
+    python calibrate/01_add_markers.py --image pcb.jpg --output markers.txt
 """
 import cv2
 import argparse
@@ -129,7 +129,7 @@ class MarkerAdder:
         print("\nGunakan coordinates ini untuk kalibrasi:")
         print("="*50)
         for i, (x, y) in enumerate(self.markers):
-            print(f"python calibrate_cli.py --add {x:.1f} {y:.1f} <mm_x> <mm_y>")
+            print(f"python calibrate/03_calibrate_cli.py --add {x:.1f} {y:.1f} <mm_x> <mm_y>")
         print("="*50)
         print("\nAtau bisa langsung lihat di file:", self.output_file)
 
@@ -143,10 +143,10 @@ def main():
     
     if not args.image:
         # Show example
-        print("Usage: python add_markers.py <image_file>")
+        print("Usage: python calibrate/01_add_markers.py <image_file>")
         print("\nContoh:")
-        print("  python add_markers.py camera_capture.jpg")
-        print("  python add_markers.py pcb.jpg --output my_markers.txt")
+        print("  python calibrate/01_add_markers.py camera_capture.jpg")
+        print("  python calibrate/01_add_markers.py pcb.jpg --output my_markers.txt")
         print("\nFile gambar yang tersedia:")
         for f in Path('.').glob('*.jpg'):
             print(f"  - {f.name}")

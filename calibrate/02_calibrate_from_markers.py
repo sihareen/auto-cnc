@@ -3,8 +3,8 @@ Script untuk kalibrasi dari marker file dan machine coordinates
 Bisa dijalankan interaktif atau dengan file input
 
 Usage:
-    python calibrate_from_markers.py                    # Interactive mode
-    python calibrate_from_markers.py --markers markers.txt  # Load dari file
+    python calibrate/02_calibrate_from_markers.py                    # Interactive mode
+    python calibrate/02_calibrate_from_markers.py --markers markers.txt  # Load dari file
 """
 import json
 import numpy as np
@@ -16,6 +16,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 DEFAULT_MARKER_FILE = "calibrate_markers.txt"
+MIN_CALIB_POINTS = 1
+MAX_CALIB_POINTS = 20
 
 def load_pixel_coordinates(marker_file):
     """Load pixel coordinates dari marker file"""
@@ -60,27 +62,55 @@ def save_machine_coords(mm_coords, output_file="machine_coords.txt"):
     print(f"Machine coordinates saved to: {output_file}")
 
 def calculate_affine_matrix(src_points, dst_points):
-    """Calculate affine transformation matrix"""
+    """Calculate adaptive transform: translation(1), similarity(2), affine(>=3)."""
+    point_count = len(src_points)
+    if point_count < MIN_CALIB_POINTS:
+        raise ValueError(f"Minimal {MIN_CALIB_POINTS} titik diperlukan")
+
+    src = np.array(src_points, dtype=np.float64)
+    dst = np.array(dst_points, dtype=np.float64)
+
+    if point_count == 1:
+        tx = float(dst[0, 0] - src[0, 0])
+        ty = float(dst[0, 1] - src[0, 1])
+        matrix = np.array([[1.0, 0.0, tx], [0.0, 1.0, ty]], dtype=np.float64)
+        return matrix, "translation"
+
+    if point_count == 2:
+        v = src[1] - src[0]
+        w = dst[1] - dst[0]
+        denom = float(v[0] * v[0] + v[1] * v[1])
+        if denom < 1e-12:
+            raise ValueError("Dua titik pixel terlalu berdekatan")
+
+        a = float((w[0] * v[0] + w[1] * v[1]) / denom)
+        b = float((w[1] * v[0] - w[0] * v[1]) / denom)
+        tx = float(dst[0, 0] - (a * src[0, 0] - b * src[0, 1]))
+        ty = float(dst[0, 1] - (b * src[0, 0] + a * src[0, 1]))
+
+        matrix = np.array([[a, -b, tx], [b, a, ty]], dtype=np.float64)
+        return matrix, "similarity"
+
     A = []
     B = []
-    
+
     for (px_x, px_y), (mm_x, mm_y) in zip(src_points, dst_points):
         A.append([px_x, px_y, 1, 0, 0, 0])
         A.append([0, 0, 0, px_x, px_y, 1])
         B.append(mm_x)
         B.append(mm_y)
-    
+
     A = np.array(A)
     B = np.array(B)
-    
+
     params, _, _, _ = np.linalg.lstsq(A, B, rcond=None)
-    
+
     matrix = np.array([
         [params[0], params[1], params[2]],
         [params[3], params[4], params[5]]
     ])
-    
-    return matrix
+
+    return matrix, "affine"
 
 def calculate_reprojection_error(matrix, src_points, dst_points):
     """Calculate reprojection error"""
@@ -92,12 +122,13 @@ def calculate_reprojection_error(matrix, src_points, dst_points):
         errors.append(error)
     return np.mean(errors), errors
 
-def save_calibration(matrix, src_points, dst_points, output_file="config/calibration_affine.json"):
+def save_calibration(matrix, fit_mode, src_points, dst_points, output_file="config/calibration_affine.json"):
     """Save calibration to file"""
     avg_error, per_errors = calculate_reprojection_error(matrix, src_points, dst_points)
     
     calibration_data = {
         "type": "affine2d",
+        "fit_mode": fit_mode,
         "source": {
             "roi_points": "config/roi_points.json",
             "mark_points": "calibrate_markers.txt"
@@ -135,6 +166,9 @@ def main():
         return
     
     pixel_coords = load_pixel_coordinates(args.markers)
+    if len(pixel_coords) > MAX_CALIB_POINTS:
+        print(f"WARNING: Marker lebih dari {MAX_CALIB_POINTS}, hanya {MAX_CALIB_POINTS} pertama dipakai")
+        pixel_coords = pixel_coords[:MAX_CALIB_POINTS]
     print(f"\nLoaded {len(pixel_coords)} pixel coordinates dari {args.markers}")
     
     # Load machine coordinates dari file atau input manual
@@ -165,6 +199,10 @@ def main():
     if len(pixel_coords) != len(machine_coords):
         print(f"ERROR: Jumlah titik tidak cocok! {len(pixel_coords)} pixel vs {len(machine_coords)} machine")
         return
+
+    if len(pixel_coords) < MIN_CALIB_POINTS:
+        print(f"ERROR: Minimal {MIN_CALIB_POINTS} titik diperlukan")
+        return
     
     print("\n" + "="*50)
     print("PIXEL -> MACHINE MAPPING:")
@@ -174,14 +212,15 @@ def main():
     
     # Calculate matrix
     print("\nMenghitung affine matrix...")
-    matrix = calculate_affine_matrix(pixel_coords, machine_coords)
+    matrix, fit_mode = calculate_affine_matrix(pixel_coords, machine_coords)
     
     print("\nAffine Matrix:")
     print(f"  [{matrix[0,0]:.10e}, {matrix[0,1]:.10e}, {matrix[0,2]:.10e}]")
     print(f"  [{matrix[1,0]:.10e}, {matrix[1,1]:.10e}, {matrix[1,2]:.10e}]")
+    print(f"Mode: {fit_mode}")
     
     # Save calibration
-    avg_error = save_calibration(matrix, pixel_coords, machine_coords, args.output)
+    avg_error = save_calibration(matrix, fit_mode, pixel_coords, machine_coords, args.output)
     
     print("\n" + "="*50)
     print("CALIBRATION COMPLETE!")
