@@ -731,7 +731,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     workflow_task = asyncio.create_task(continue_drill_workflow())
                 elif start_state == "standby_ready":
                     workflow_task = asyncio.create_task(run_drill_workflow())
-                else:
+                elif not start_state:
                     if cnc_controller and cnc_controller.is_connected:
                         system_state["status"] = "STANDBY_MOVING"
                         await broadcast_state()
@@ -795,7 +795,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     system_state["status"] = "NOT_READY"
                 await broadcast_state()
 
-elif cmd == "reset":
+            elif cmd == "reset":
                 stop_event.set()
                 if executor:
                     await asyncio.to_thread(executor.reset)
