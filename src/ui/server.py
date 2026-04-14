@@ -52,6 +52,7 @@ STANDBY_Z = 5.0
 TEMP_DIR = Path("temp")
 JOB_OVERLAY_IMAGE_PATH = TEMP_DIR / "overlay.jpg"
 CALIBRATE_IMAGE_PATH = TEMP_DIR / "calibrate.jpg"
+LAST_JOB_POINTS_PATH = Path("config/last_job_points.json")
 CALIB_OFFSET_PATH = Path("config/calibration_runtime_offset.json")
 CALIB_OFFSET_X = 0.0
 CALIB_OFFSET_Y = 0.0
@@ -84,6 +85,17 @@ def _save_runtime_offset():
             json.dump({"offset_x": CALIB_OFFSET_X, "offset_y": CALIB_OFFSET_Y}, f, indent=2)
     except Exception as e:
         logger.warning(f"Failed to save runtime offset: {e}")
+
+
+def _save_last_job_points():
+    """Persist drill points to config/last_job_points.json."""
+    try:
+        LAST_JOB_POINTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(LAST_JOB_POINTS_PATH, "w") as f:
+            json.dump({"points": pending_drill_points}, f, indent=2)
+        logger.info(f"Saved {len(pending_drill_points)} drill points to {LAST_JOB_POINTS_PATH}")
+    except Exception as e:
+        logger.warning(f"Failed to save last job points: {e}")
 
 
 def _apply_runtime_offset(x: float, y: float) -> Tuple[float, float]:
@@ -509,6 +521,7 @@ async def run_drill_workflow():
         # START phase-1: stop at first padhole, wait second START to continue drilling.
         global pending_drill_points
         pending_drill_points = [(float(p.x), float(p.y)) for p in job.points]
+        _save_last_job_points()
         first_x, first_y = pending_drill_points[0]
         ok_first = await asyncio.to_thread(cnc_controller.move_to, first_x, first_y, 5.0, 1000, True, 30.0)
         if not ok_first:

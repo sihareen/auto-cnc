@@ -1,6 +1,10 @@
 # Changelog
 
 ### [2026-04-14]
+- **feat(workflow):** simpan drill points ke config/last_job_points.json setiap capture (overwrite)
+- **revert(workflow):** hapus fitur manual jog adjustment di continue_drill_workflow
+
+### [2026-04-14]
 - **feat(ui):** tambah kontrol STANDBY di dashboard dan integrasi command backend untuk safe move ke koordinat standby (Z-up lalu XY)
 - **feat(cnc):** integrasikan RESET ke recovery hardware (emergency stop + unlock/home/clearance) agar tidak hanya reset state aplikasi
 - **feat(workflow):** ubah alur START menjadi 2 tahap (klik 1 berhenti di padhole pertama, klik 2 lanjut drilling)
