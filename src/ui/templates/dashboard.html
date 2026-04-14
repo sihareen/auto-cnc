@@ -642,7 +642,12 @@
                     <div class="panel-header">Manual CNC Control</div>
                     <div class="panel-body">
                         <div class="jog-inputs">
-                            <input id="jog-step" type="number" value="1.0" min="0.01" step="0.01" placeholder="Step mm" aria-label="Jog step">
+                            <select id="jog-step" aria-label="Jog step">
+                                <option value="0.1">0.1 mm</option>
+                                <option value="0.5">0.5 mm</option>
+                                <option value="1" selected>1 mm</option>
+                                <option value="5">5 mm</option>
+                            </select>
                             <input id="jog-feed" type="number" value="600" min="50" step="50" placeholder="Feed" aria-label="Jog feed">
                         </div>
                         <div class="jog-area">
