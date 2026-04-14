@@ -1,6 +1,7 @@
 # Changelog
 
 ### [2026-04-14]
+- **docs:** update README dengan 3-click workflow, jog offset adjustment, dan konfigurasi file
 - **feat(workflow):** simpan drill points ke config/last_job_points.json setiap capture (overwrite)
 - **revert(workflow):** hapus fitur manual jog adjustment di continue_drill_workflow
 
