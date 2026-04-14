@@ -1,6 +1,7 @@
 # Changelog
 
 ### [2026-04-14]
+- **refactor(ui):** replace RESET OFFSET with UNLOCK button, auto-clear calib offset in RESET
 - **fix(cnc):** unlock GRBL ($X) before homing to prevent error 8
 - **feat(ui):** jog-step dropdown (0.1, 0.5, 1, 5 mm) instead of manual input
 - **fix(workflow):** add safe position fallback when homing fails (error 8)

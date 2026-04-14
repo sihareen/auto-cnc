@@ -715,8 +715,8 @@
                             <button class="btn btn-red" data-requires-ws id="btn-stop">STOP</button>
                             <button class="btn btn-blue" data-requires-ws id="btn-home">HOME</button>
                             <button class="btn btn-blue" data-requires-ws id="btn-standby">STANDBY</button>
+                            <button class="btn btn-blue" data-requires-ws id="btn-unlock">UNLOCK</button>
                             <button class="btn btn-amber" data-requires-ws id="btn-reset">RESET</button>
-                            <button class="btn btn-amber" data-requires-ws id="btn-reset-offset">RESET OFFSET</button>
                         </div>
                     </div>
                 </div>
@@ -988,8 +988,8 @@
             sendCommand({ command: 'reset' }, 'Reset command sent');
         };
 
-        document.getElementById('btn-reset-offset').onclick = function() {
-            sendCommand({ command: 'reset_offset' }, 'Reset offset command sent');
+        document.getElementById('btn-unlock').onclick = function() {
+            sendCommand({ command: 'unlock' }, 'Unlock command sent');
         };
 
         document.getElementById('btn-camera-connect').onclick = function() {

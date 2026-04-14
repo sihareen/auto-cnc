@@ -795,16 +795,58 @@ async def websocket_endpoint(websocket: WebSocket):
                     system_state["status"] = "NOT_READY"
                 await broadcast_state()
 
-            elif cmd == "reset":
+elif cmd == "reset":
                 stop_event.set()
                 if executor:
                     await asyncio.to_thread(executor.reset)
                 pending_drill_points = []
+                CALIB_OFFSET_X = 0.0
+                CALIB_OFFSET_Y = 0.0
                 jog_offset["x"] = 0.0
                 jog_offset["y"] = 0.0
                 jog_offset["z"] = 0.0
+                system_state["calibrate_offset"] = {"x": 0.0, "y": 0.0}
                 system_state["jog_offset"] = {"x": 0.0, "y": 0.0, "z": 0.0}
                 system_state["status"] = "RESETTING"
+                await broadcast_state()
+
+                hardware_ok = True
+                if cnc_controller and cnc_controller.is_connected:
+                    hardware_ok = await asyncio.to_thread(
+                        cnc_controller.recover_from_reset,
+                        5.0,
+                        False,
+                        "XYZ"
+                    )
+
+                if hardware_ok:
+                    if cnc_controller and cnc_controller.is_connected:
+                        status = await asyncio.to_thread(cnc_controller.get_status)
+                        position = status.get("position", {})
+                        system_state["position"] = {
+                            "x": float(position.get("x", 0.0)),
+                            "y": float(position.get("y", 0.0)),
+                            "z": float(position.get("z", 0.0)),
+                        }
+                    system_state["status"] = "IDLE"
+                    system_state["last_error"] = None
+                else:
+                    system_state["status"] = "ERROR"
+                    system_state["last_error"] = "Reset recovery failed"
+
+                system_state["execution_state"] = 0
+                system_state["progress"] = {"current": 0, "total": 0}
+                system_state["start_state"] = "idle"
+                await broadcast_state()
+
+            elif cmd == "unlock":
+                if cnc_controller and cnc_controller.is_connected:
+                    ok_unlock = await asyncio.to_thread(cnc_controller.unlock)
+                    system_state["status"] = "IDLE" if ok_unlock else "ERROR"
+                    if not ok_unlock:
+                        system_state["last_error"] = "Unlock failed"
+                else:
+                    system_state["status"] = "NOT_READY"
                 await broadcast_state()
 
                 hardware_ok = True
