@@ -11,7 +11,7 @@
 
   "camera": {
     "_comment": "Camera settings - index from 0-9, check with: ls /dev/video*",
-    "main_index": 4,
+    "main_index": 2,
     "preview_index": 0,
     "width": 640,
     "height": 480,
@@ -20,14 +20,14 @@
 
   "standby": {
     "_comment": "Standby position after drill complete (X, Y only, Z unchanged)",
-    "x": 85.0,
-    "y": -95.0
+    "x": 86.0,
+    "y": -100.0
   },
 
   "drill": {
     "_comment": "Drilling parameters",
     "z_depth": 1.5,
-    "z_clearance": 5.0,
+    "z_clearance": 5,
     "z_drill_feed": 300,
     "xy_move_feed": 1000,
     "z_move_feed": 1000
@@ -38,14 +38,41 @@
     "model_path": "best.pt",
     "confidence_threshold": 0.25,
     "iou_threshold": 0.45,
-    "min_points": 1
+    "min_points": 1,
+    "retry_count": 2,
+    "retry_threshold_step": 0.05
+  },
+
+  "retry": {
+    "_comment": "Retry policy for reliability",
+    "move": 1,
+    "status": 1,
+    "capture": 1
+  },
+
+  "workspace": {
+    "_comment": "Soft-limit for drill/calibrate target (mm)",
+    "x_min": 120.0,
+    "x_max": 220.0,
+    "y_min": -130.0,
+    "y_max": 0.0,
+    "margin_mm": 1.0
   },
 
   "calibration": {
     "_comment": "Calibration file paths",
     "affine_matrix": "config/calibration_affine.json",
     "runtime_offset": "config/calibration_runtime_offset.json",
-    "cal_offset": "config/cal_offset.json"
+    "cal_offset": "config/cal_offset.json",
+    "timeout_sec": 45.0
+  },
+
+  "performance": {
+    "_comment": "Adaptive XY feed by number of drill points",
+    "slow_point_threshold": 15,
+    "slow_xy_multiplier": 0.9,
+    "fast_point_threshold": 60,
+    "fast_xy_multiplier": 1.2
   },
 
   "output": {

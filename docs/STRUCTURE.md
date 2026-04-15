@@ -52,17 +52,9 @@ python main.py
 python -m uvicorn src.ui.server:app --host 0.0.0.0 --port 8000
 ```
 
-#### `run_drill_workflow.py`
-- **Fungsi**: CLI untuk full drill workflow (tanpa web UI)
-- **Mode**: `--simulate` (tanpa CNC) atau real CNC
-
-```bash
-# Simulation mode
-python run_drill_workflow.py --simulate
-
-# Real CNC
-python run_drill_workflow.py --camera 4 --port /dev/ttyUSB0
-```
+#### `run_drill_workflow.py` (deprecated)
+- **Status**: tidak dipakai di jalur produk aktif
+- **Flow aktif**: dashboard web + WebSocket di `src/ui/server.py`
 
 ---
 
@@ -177,7 +169,7 @@ ws.send(JSON.stringify({command: 'status'}));
 
 ## Workflow Execution
 
-### 3-Click Drill Workflow
+### 2-Click Drill Workflow
 
 ```
 CLICK 1: START
@@ -189,38 +181,28 @@ CLICK 2: START
 └─► YOLOv7 detection (pixel coordinates)
 └─► Affine transform (pixel → machine mm)
 └─► Save points ke config/last_job_points.json
-└─► Move ke first padhole, pause
-└─► Status: PAUSED_AT_PADHOLE
-
-CLICK 3 (optional): JOG
-└─► Jog manual x/y/z untuk koreksi posisi drill
-└─► Offset diakumulasi di jog_offset
-└─► Save work_points ke config/work_points.json
-
-CLICK 3: START (continue)
-└─► Work points = original points + jog_offset
+└─► Hitung work_points = last_job_points + cal_offset
 └─► For each point:
-    ├─► cnc.move_to(x + offset_x, y + offset_y, z_clear + offset_z)
-    ├─► cnc.move_to(z_drill + offset_z)  # -1.5mm
-    └─► cnc.move_to(z_clear + offset_z)  # 5.0mm
-└─► Return HOME
+    ├─► cnc.move_to(x, y, z_clear)
+    ├─► cnc.move_to(z_target)  # target dari calibrated Z / current Z
+    └─► cnc.move_to(z_clear)
+└─► Return STANDBY
 ```
 
 ### State Machine States
 
 ```
-IDLE → STANDBY → STANDBY_READY → ACQUIRING → TRANSFORM → PAUSED_AT_PADHOLE → DRILLING → HOME
+IDLE → STANDBY_READY → ACQUIRING → TRANSFORM → DRILLING → STANDBY → IDLE
 ```
 
-### 3-Click Drill Workflow
+### 2-Click Drill Workflow
 
 | Click | Status | Action |
 |-------|--------|--------|
 | 1 | STANDBY_READY | CNC move ke standby (Z-up, XY standby) |
-| 2 | PAUSED_AT_PADHOLE | Capture, YOLOv7 detect, move ke first padhole (bbox merah), pause |
-| 3 | DRILLING→HOME | Drill semua hole, return HOME |
+| 2 | DRILLING→STANDBY | Capture, detect, transform, drill semua hole, return standby |
 
-**Jog Offset Adjustment:** Saat PAUSED_AT_PADHOLE, operator bisa jog manual (x/y/z) untuk koreksi. Offset diakumulasi dan diterapkan ke semua drill points.
+**Koreksi posisi:** gunakan flow CALIBRATE 2-click (detect target → jog → simpan offset X/Y/Z).
 
 ---
 
@@ -279,9 +261,10 @@ IDLE → STANDBY → STANDBY_READY → ACQUIRING → TRANSFORM → PAUSED_AT_PAD
 # Access: http://localhost:8000
 ```
 
-### Run CLI Workflow
+### Run Workflow (Product Path)
 ```bash
-/home/hreen/.python-envs/general/bin/python run_drill_workflow.py --simulate
+/home/hreen/.python-envs/general/bin/python main.py
+# Open dashboard and control via START/CALIBRATE
 ```
 
 ### Check Hardware
@@ -309,10 +292,10 @@ print(f"Detected: {len(results)}")
 
 ## Notes
 
-1. **Camera Index**: Default camera_index=4 (`/dev/video4`)
+1. **Camera Index**: baca dari `config/config.json` (`camera.main_index`)
 2. **Serial Port**: Default `/dev/ttyUSB0`, baud 115200
 3. **Calibration Error**: Target < 1mm (current: 0.729mm)
 4. **Detection Threshold**: confidence=0.25, iou=0.45
 5. **Drill Depth**: -1.5mm (Z axis)
 6. **Clearance Height**: 5.0mm (Z axis)
-7. **Jog Offset**: Accumulated during PAUSED_AT_PADHOLE, applied to all drill coordinates
+7. **Offset Koreksi**: disimpan lewat flow CALIBRATE ke `config/cal_offset.json`

@@ -1,0 +1,13 @@
+# Markers from capture.jpeg
+# Total: 9 points
+# Format: x y (pixel coordinates)
+#
+191.0 638.0
+116.0 401.0
+112.0 43.0
+575.0 64.0
+577.0 410.0
+535.0 675.0
+1006.0 676.0
+1073.0 428.0
+1076.0 58.0

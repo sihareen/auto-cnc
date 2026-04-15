@@ -128,7 +128,7 @@ class DrillJobManager:
         return job
     
     def _optimize_path(self, job: DrillJob):
-        """Optimize drilling path using nearest neighbor"""
+        """Optimize drilling path using nearest-neighbor + lightweight 2-opt."""
         if len(job.points) <= 1:
             return
         
@@ -144,10 +144,41 @@ class DrillJobManager:
             optimized.append(nearest)
             remaining.remove(nearest)
             current = nearest
-        
-        job.points = optimized
-        
-        logger.info(f"Optimized path: {len(optimized)} points")
+
+        improved = self._two_opt(optimized, max_passes=2)
+        job.points = improved
+        logger.info(f"Optimized path: {len(improved)} points")
+
+    def _path_length(self, points: List[DrillPoint]) -> float:
+        if len(points) <= 1:
+            return 0.0
+        return float(sum(points[i].distance_to(points[i + 1]) for i in range(len(points) - 1)))
+
+    def _two_opt(self, points: List[DrillPoint], max_passes: int = 2) -> List[DrillPoint]:
+        """Short bounded 2-opt pass to reduce zig-zag motion cost."""
+        if len(points) < 4:
+            return points
+
+        best = points[:]
+        best_len = self._path_length(best)
+        n = len(best)
+
+        for _ in range(max_passes):
+            changed = False
+            for i in range(1, n - 2):
+                for k in range(i + 1, n - 1):
+                    if k - i < 2:
+                        continue
+                    candidate = best[:i] + list(reversed(best[i:k + 1])) + best[k + 1:]
+                    cand_len = self._path_length(candidate)
+                    if cand_len + 1e-9 < best_len:
+                        best = candidate
+                        best_len = cand_len
+                        changed = True
+            if not changed:
+                break
+
+        return best
     
     def _generate_gcode(self, job: DrillJob):
         """Generate G-Code for drill job"""

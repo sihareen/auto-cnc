@@ -42,30 +42,30 @@ Klik **START** pertama:
 - CNC move ke posisi standby (Z-up dulu, lalu XY standby)
 - **Tujuannya:** Spindle naik dulu untuk clearance, baru bergerak ke posisi standby
 
-### Tahap 3: Click 2 - Capture & Pause
+### Tahap 3: Click 2 - Capture & Drill
 
 Klik **START** kedua:
 - Kamera ambil foto PCB
 - YOLOv7 detect semua padhole
 - Koordinat piksel → transformasi ke koordinat mesin (mm)
-- CNC move ke padhole pertama (bbox merah di overlay)
-- **PAUSE** di sini
+- Simpan `last_job_points` + hitung `work_points`
+- CNC drill semua hole berurutan
+- Selesai: kembali ke posisi standby
 
-**Output:** Daftar koordinat lubang, CNC berhenti di hole pertama
+**Output:** Daftar koordinat lubang, seluruh hole selesai dibor
 
-### Tahap 4: Click 3 - Jog & Drill
+### Tahap 4: Koreksi lewat CALIBRATE (opsional)
 
-Opsi A: **Klik START** (langsung drill semua hole)
-
-Opsi B: **Jog Manual** dulu untuk koreksi:
-- Jog X/Y/Z untuk geser posisi drill sampai tepat di target
-- Setiap jog offset diakumulasi
-- Klik **START** → drill pakai work coordinate (original + offset)
+Jika posisi belum presisi:
+- Klik **CALIBRATE**: sistem capture + move ke titik target
+- Jog X/Y/Z manual sampai pas
+- Klik **CALIBRATE** lagi: simpan `cal_offset` (X/Y/Z)
+- Jalankan **START** lagi untuk job berikutnya dengan offset baru
 
 ### Tahap 5: Selesai
 
 Setelah drilling selesai:
-- CNC return ke HOME
+- CNC return ke standby
 - Status: IDLE
 
 ---
@@ -83,16 +83,14 @@ ACQUIRING (capture & detect)
     ↓
 TRANSFORM (pixel → mm)
     ↓
-PAUSED_AT_PADHOLE (bbox merah, siap koreksi jog)
-    ↓ Start/Jog
 DRILLING (mengebor satu-satu)
     ↓
-HOME (kembali ke origin)
+STANDBY (kembali ke posisi aman)
     ↓
 IDLE
 ```
 
-**Jog Offset:** Saat PAUSED_AT_PADHOLE, operator bisa jog x/y/z. Offset diakumulasi dan dipakai saat drilling.
+**Koreksi posisi:** pakai flow CALIBRATE 2-step untuk simpan offset X/Y/Z.
 
 **Error states:**
 - ERROR_DETECTION: Tidak ada lubang terdeteksi
@@ -221,20 +219,19 @@ Output G-Code (mm):
 2. Klik "START" → CNC move standby
 3. Klik "START" → Capture, detect, move ke first padhole, PAUSE
 4. [Optional] Jog manual x/y/z untuk koreksi
-5. Klik "START" → Drill semua hole (dengan offset jika ada), return HOME
-6. Selesai → CNC HOME, kembali ke IDLE
+5. Klik "START" → Drill semua hole (dengan offset jika ada), return STANDBY
+6. Selesai → CNC STANDBY, kembali ke IDLE
 ```
 
-**3-Click Workflow:**
+**2-Click Workflow:**
 | Click | Action |
 |-------|--------|
 | 1 | Move ke standby |
-| 2 | Capture & pause di first padhole |
-| 3 | Drill (atau jog dulu baru drill) |
+| 2 | Capture, detect, drill semua hole, return standby |
 
 Sistem ini semi-otomatis: operator tetap perlu:
 - Place/clamp PCB
-- Klik start 3x
+- Klik start 2x
 - Monitor progress
 - Handle error jika ada
-- Jog koreksi jika perlu
+- Kalibrasi ulang jika perlu

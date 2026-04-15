@@ -5,6 +5,9 @@ import asyncio
 import logging
 import threading
 import json
+from datetime import datetime, UTC
+from time import perf_counter
+from uuid import uuid4
 from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 
@@ -26,15 +29,18 @@ system_state = {
     "progress": {"current": 0, "total": 0},
     "connected": False,
     "last_error": None,
+    "last_warning": None,
     "execution_state": 0,
     "calibrate_state": "idle",
-    "start_state": "idle"
+    "start_state": "idle",
+    "preflight": {},
 }
 
 # WebSocket connections
 connected_clients: List[WebSocket] = []
 workflow_task: Optional[asyncio.Task] = None
 stop_event = threading.Event()
+current_job_id: Optional[str] = None
 
 # Initialize components (will be connected in main)
 camera = None
@@ -72,7 +78,30 @@ def _get_cfg(path: str, default: Any = None) -> Any:
 # CNC settings
 STANDBY_X = _get_cfg("standby.x", 85.0)
 STANDBY_Y = _get_cfg("standby.y", -95.0)
-STANDBY_Z = 0.0
+XY_MOVE_FEED = int(_get_cfg("drill.xy_move_feed", 1000))
+Z_DRILL_FEED = int(_get_cfg("drill.z_drill_feed", 300))
+Z_MOVE_FEED = int(_get_cfg("drill.z_move_feed", 1000))
+DETECTION_CONFIDENCE_THRESHOLD = float(_get_cfg("detection.confidence_threshold", 0.25))
+DETECTION_IOU_THRESHOLD = float(_get_cfg("detection.iou_threshold", 0.45))
+DETECTION_MODEL_PATH = str(_get_cfg("detection.model_path", "best.pt"))
+DETECTION_MIN_POINTS = int(_get_cfg("detection.min_points", 1))
+DETECTION_RETRY_COUNT = int(_get_cfg("detection.retry_count", 2))
+DETECTION_RETRY_STEP = float(_get_cfg("detection.retry_threshold_step", 0.05))
+CALIBRATION_AFFINE_PATH = str(_get_cfg("calibration.affine_matrix", "config/calibration_affine.json"))
+CAMERA_MAIN_INDEX = int(_get_cfg("camera.main_index", 0))
+CAMERA_PREVIEW_INDEX = int(_get_cfg("camera.preview_index", 1))
+CNC_PORT = str(_get_cfg("cnc.port", "/dev/ttyUSB0"))
+CNC_BAUDRATE = int(_get_cfg("cnc.baudrate", 115200))
+CNC_TIMEOUT = float(_get_cfg("cnc.timeout", 2.0))
+WORKSPACE_MARGIN_MM = float(_get_cfg("workspace.margin_mm", 0.0))
+RETRY_MOVE = int(_get_cfg("retry.move", 1))
+RETRY_STATUS = int(_get_cfg("retry.status", 1))
+RETRY_CAPTURE = int(_get_cfg("retry.capture", 1))
+CALIBRATE_TIMEOUT_SEC = float(_get_cfg("calibration.timeout_sec", 45.0))
+PERF_FAST_THRESHOLD = int(_get_cfg("performance.fast_point_threshold", 60))
+PERF_SLOW_THRESHOLD = int(_get_cfg("performance.slow_point_threshold", 15))
+PERF_FAST_MULT = float(_get_cfg("performance.fast_xy_multiplier", 1.2))
+PERF_SLOW_MULT = float(_get_cfg("performance.slow_xy_multiplier", 0.9))
 
 # File paths
 TEMP_DIR = Path("temp")
@@ -85,10 +114,281 @@ CAL_OFFSET_PATH = Path(_get_cfg("calibration.cal_offset", "config/cal_offset.jso
 CALIB_OFFSET_X = 0.0
 CALIB_OFFSET_Y = 0.0
 DASHBOARD_HTML_PATH = Path(__file__).resolve().parent / "templates" / "dashboard.html"
+JOB_LOGS_DIR = Path("logs/jobs")
 
 # Expose temp artifacts (e.g., overlay.jpg) for dashboard preview cards.
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/temp", StaticFiles(directory=str(TEMP_DIR)), name="temp")
+
+
+def _is_valid_camera_index(camera_index: int) -> bool:
+    return 0 <= int(camera_index) <= 9
+
+
+def _set_error(code: str, message: str) -> None:
+    system_state["error_code"] = code
+    system_state["last_error"] = message
+    _log_job_event("error", code=code, message=message)
+
+
+def _log_job_event(event: str, **fields: Any) -> None:
+    payload = {"event": event, "job_id": current_job_id}
+    payload.update(fields)
+    logger.info(json.dumps(payload, sort_keys=True, default=str))
+    _append_job_telemetry(event, **fields)
+
+
+def _validate_startup_config() -> List[str]:
+    warnings: List[str] = []
+    if not Path(DETECTION_MODEL_PATH).exists():
+        warnings.append(f"Detection model file not found: {DETECTION_MODEL_PATH}")
+    if not Path(CALIBRATION_AFFINE_PATH).exists():
+        warnings.append(f"Calibration file not found: {CALIBRATION_AFFINE_PATH}")
+    if not _is_valid_camera_index(CAMERA_MAIN_INDEX):
+        warnings.append(f"Invalid main camera index in config: {CAMERA_MAIN_INDEX}")
+    if not _is_valid_camera_index(CAMERA_PREVIEW_INDEX):
+        warnings.append(f"Invalid preview camera index in config: {CAMERA_PREVIEW_INDEX}")
+    if CAMERA_MAIN_INDEX == CAMERA_PREVIEW_INDEX:
+        warnings.append("Main and preview camera index should be different")
+    if not CNC_PORT:
+        warnings.append("CNC port empty in config")
+    if CNC_BAUDRATE <= 0:
+        warnings.append(f"Invalid CNC baudrate in config: {CNC_BAUDRATE}")
+    if CNC_TIMEOUT <= 0:
+        warnings.append(f"Invalid CNC timeout in config: {CNC_TIMEOUT}")
+    return warnings
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _job_log_path(job_id: str) -> Path:
+    return JOB_LOGS_DIR / f"{job_id}.json"
+
+
+def _init_job_telemetry(job_id: str) -> None:
+    try:
+        JOB_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "job_id": job_id,
+            "started_at": _now_iso(),
+            "status": "running",
+            "events": [],
+        }
+        _job_log_path(job_id).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"Failed to initialize job telemetry: {e}")
+
+
+def _append_job_telemetry(event: str, **fields: Any) -> None:
+    if not current_job_id:
+        return
+
+    path = _job_log_path(current_job_id)
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            data = {
+                "job_id": current_job_id,
+                "started_at": _now_iso(),
+                "status": "running",
+                "events": [],
+            }
+
+        data.setdefault("events", []).append({
+            "ts": _now_iso(),
+            "event": event,
+            **fields,
+        })
+
+        if event in {"job_complete"}:
+            data["status"] = "complete"
+            data["ended_at"] = _now_iso()
+        elif event in {"job_failed", "job_aborted", "job_stopped"}:
+            data["status"] = "failed" if event == "job_failed" else event.replace("job_", "")
+            data["ended_at"] = _now_iso()
+
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"Failed to append job telemetry: {e}")
+
+
+def _set_last_job_summary(status: str, points: int = 0, metrics: Optional[Dict[str, float]] = None) -> None:
+    system_state["last_job_summary"] = {
+        "job_id": current_job_id,
+        "status": status,
+        "points": int(points),
+        "total_ms": (metrics or {}).get("total_ms"),
+        "drill_ms": (metrics or {}).get("drill_loop_ms"),
+        "error_code": system_state.get("error_code"),
+        "last_error": system_state.get("last_error"),
+        "last_warning": system_state.get("last_warning"),
+        "ts": _now_iso(),
+    }
+
+
+def _summarize_metrics(date_utc: Optional[str] = None) -> Dict[str, Any]:
+    JOB_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    files = sorted(JOB_LOGS_DIR.glob("*.json"))
+    jobs: List[Dict[str, Any]] = []
+    error_counter: Dict[str, int] = {}
+    total_ms_values: List[float] = []
+    drill_ms_values: List[float] = []
+
+    for f in files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        started_at = str(data.get("started_at", ""))
+        if date_utc and not started_at.startswith(date_utc):
+            continue
+
+        status = str(data.get("status", "unknown"))
+        events = data.get("events", [])
+        points = 0
+        metrics_evt = None
+
+        for evt in events:
+            if evt.get("event") == "point_drilled":
+                points = max(points, int(evt.get("point", 0)))
+            if evt.get("event") == "metrics":
+                metrics_evt = evt
+            if evt.get("event") == "error":
+                code = str(evt.get("code", "UNKNOWN"))
+                error_counter[code] = error_counter.get(code, 0) + 1
+
+        if metrics_evt:
+            if isinstance(metrics_evt.get("total_ms"), (int, float)):
+                total_ms_values.append(float(metrics_evt["total_ms"]))
+            if isinstance(metrics_evt.get("drill_loop_ms"), (int, float)):
+                drill_ms_values.append(float(metrics_evt["drill_loop_ms"]))
+
+        jobs.append({
+            "job_id": data.get("job_id"),
+            "status": status,
+            "started_at": started_at,
+            "ended_at": data.get("ended_at"),
+            "points": points,
+            "metrics": metrics_evt or {},
+        })
+
+    jobs_sorted = sorted(jobs, key=lambda j: str(j.get("started_at", "")), reverse=True)
+    total_jobs = len(jobs_sorted)
+    completed = sum(1 for j in jobs_sorted if j.get("status") == "complete")
+    failed = sum(1 for j in jobs_sorted if j.get("status") in {"failed", "aborted", "stopped"})
+    success_rate = (completed / total_jobs * 100.0) if total_jobs > 0 else 0.0
+
+    def _avg(vals: List[float]) -> Optional[float]:
+        return round(sum(vals) / len(vals), 2) if vals else None
+
+    top_errors = sorted(
+        [{"code": code, "count": count} for code, count in error_counter.items()],
+        key=lambda x: x["count"],
+        reverse=True,
+    )[:5]
+
+    return {
+        "date_utc": date_utc or datetime.now(UTC).date().isoformat(),
+        "total_jobs": total_jobs,
+        "completed_jobs": completed,
+        "failed_jobs": failed,
+        "success_rate_pct": round(success_rate, 2),
+        "avg_total_ms": _avg(total_ms_values),
+        "avg_drill_ms": _avg(drill_ms_values),
+        "top_errors": top_errors,
+        "recent_jobs": jobs_sorted[:10],
+    }
+
+
+def _resolve_workspace_bounds() -> Optional[Dict[str, Tuple[float, float]]]:
+    workspace_cfg = _get_cfg("workspace", {})
+    if isinstance(workspace_cfg, dict):
+        try:
+            x_min = workspace_cfg.get("x_min")
+            x_max = workspace_cfg.get("x_max")
+            y_min = workspace_cfg.get("y_min")
+            y_max = workspace_cfg.get("y_max")
+            if None not in (x_min, x_max, y_min, y_max):
+                return {
+                    "x": (float(x_min), float(x_max)),
+                    "y": (float(y_min), float(y_max)),
+                }
+        except Exception:
+            pass
+
+    if transformer is not None and getattr(transformer, "workspace_bounds", None):
+        bounds = transformer.workspace_bounds
+        if isinstance(bounds, dict) and "x" in bounds and "y" in bounds:
+            return {
+                "x": (float(bounds["x"][0]), float(bounds["x"][1])),
+                "y": (float(bounds["y"][0]), float(bounds["y"][1])),
+            }
+
+    return None
+
+
+def _apply_soft_limit_xy(x: float, y: float) -> Tuple[float, float, bool]:
+    bounds = _resolve_workspace_bounds()
+    if not bounds:
+        return float(x), float(y), False
+
+    x_min, x_max = bounds["x"]
+    y_min, y_max = bounds["y"]
+    x_clipped = max(x_min + WORKSPACE_MARGIN_MM, min(float(x), x_max - WORKSPACE_MARGIN_MM))
+    y_clipped = max(y_min + WORKSPACE_MARGIN_MM, min(float(y), y_max - WORKSPACE_MARGIN_MM))
+    clipped = abs(x_clipped - float(x)) > 1e-9 or abs(y_clipped - float(y)) > 1e-9
+    return x_clipped, y_clipped, clipped
+
+
+async def _retry_async(fn, retries: int, op_name: str, *args):
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            result = await asyncio.to_thread(fn, *args)
+            is_success = False
+            if result is None:
+                is_success = False
+            elif isinstance(result, bool):
+                is_success = result
+            elif isinstance(result, np.ndarray):
+                is_success = result.size > 0
+            else:
+                try:
+                    is_success = bool(result)
+                except ValueError:
+                    # Numpy-like objects with ambiguous truth value.
+                    is_success = True
+                except Exception:
+                    is_success = True
+
+            if is_success:
+                if attempt > 0:
+                    _log_job_event("retry_success", op=op_name, attempt=attempt + 1)
+                return result
+        except Exception as exc:
+            last_exc = exc
+        if attempt < retries:
+            _log_job_event("retry", op=op_name, attempt=attempt + 1)
+    if last_exc is not None:
+        raise last_exc
+    return None
+
+
+def _dynamic_xy_feed(total_points: int) -> int:
+    base = max(100, int(XY_MOVE_FEED))
+    if total_points >= PERF_FAST_THRESHOLD:
+        return max(100, int(base * PERF_FAST_MULT))
+    if total_points <= PERF_SLOW_THRESHOLD:
+        return max(100, int(base * PERF_SLOW_MULT))
+    return base
+
+
+def _record_metric(metrics: Dict[str, float], key: str, t_start: float) -> None:
+    metrics[key] = round((perf_counter() - t_start) * 1000.0, 2)
 
 
 def _load_runtime_offset():
@@ -126,8 +426,8 @@ def _save_last_job_points():
         logger.warning(f"Failed to save last job points: {e}")
 
 
-def _calculate_work_points():
-    """Calculate work_points = last_job_points + cal_offset and save to work_points.json."""
+def _calculate_work_points(extra_offset_x: float = 0.0, extra_offset_y: float = 0.0, extra_offset_z: float = 0.0):
+    """Calculate work_points = last_job_points + cal_offset + optional jog offsets."""
     try:
         # Load last_job_points
         if not LAST_JOB_POINTS_PATH.exists():
@@ -149,9 +449,15 @@ def _calculate_work_points():
                 cal_offset_y = float(cal_data.get("y", 0.0))
                 cal_offset_z = cal_data.get("z")  # May be None if not set
         
+        total_offset_x = cal_offset_x + float(extra_offset_x)
+        total_offset_y = cal_offset_y + float(extra_offset_y)
+        total_offset_z = (cal_offset_z if cal_offset_z is not None else None)
+        if total_offset_z is not None:
+            total_offset_z = float(total_offset_z) + float(extra_offset_z)
+
         # Calculate work_points
         work_points = [
-            (px + cal_offset_x, py + cal_offset_y)
+            (px + total_offset_x, py + total_offset_y)
             for px, py in last_points
         ]
         
@@ -160,14 +466,27 @@ def _calculate_work_points():
         with open(WORK_POINTS_PATH, "w") as f:
             json.dump({
                 "points": work_points,
-                "cal_offset": {"x": cal_offset_x, "y": cal_offset_y, "z": cal_offset_z}
+                "cal_offset": {"x": total_offset_x, "y": total_offset_y, "z": total_offset_z}
             }, f, indent=2)
         
-        logger.info(f"Calculated work_points with cal_offset: X{cal_offset_x:.3f} Y{cal_offset_y:.3f} Z{cal_offset_z}")
+        logger.info(
+            "Calculated work_points with offsets: "
+            f"cal(X={cal_offset_x:.3f},Y={cal_offset_y:.3f},Z={cal_offset_z}) "
+            f"jog(X={extra_offset_x:.3f},Y={extra_offset_y:.3f},Z={extra_offset_z:.3f})"
+        )
         return True
     except Exception as e:
         logger.warning(f"Failed to calculate work points: {e}")
         return False
+
+
+def _save_work_points() -> bool:
+    """Backwards-compatible helper used by paused jog flow."""
+    return _calculate_work_points(
+        jog_offset.get("x", 0.0),
+        jog_offset.get("y", 0.0),
+        jog_offset.get("z", 0.0),
+    )
 
 
 def _apply_runtime_offset(x: float, y: float) -> Tuple[float, float]:
@@ -180,10 +499,26 @@ def _apply_runtime_offset_points(points: List[Tuple[float, float]]) -> List[Tupl
     return [_apply_runtime_offset(x, y) for x, y in points]
 
 
+def _get_calibrated_z_reference() -> Optional[float]:
+    """Load calibrated Z reference from cal_offset.json when available."""
+    try:
+        if not CAL_OFFSET_PATH.exists():
+            return None
+        with open(CAL_OFFSET_PATH, "r") as f:
+            data = json.load(f)
+        z_val = data.get("z")
+        return float(z_val) if z_val is not None else None
+    except Exception:
+        return None
+
+
 def connect_camera_sync(camera_index: int) -> bool:
     """Reconnect camera using user-selected index."""
     global camera
     try:
+        if not _is_valid_camera_index(camera_index):
+            logger.warning(f"Invalid camera index requested: {camera_index}")
+            return False
         from src.vision.camera import CameraCapture
 
         if camera is not None:
@@ -210,6 +545,9 @@ def connect_preview_camera_sync(camera_index: int) -> bool:
     """Reconnect preview-only camera using user-selected index."""
     global preview_camera
     try:
+        if not _is_valid_camera_index(camera_index):
+            logger.warning(f"Invalid preview camera index requested: {camera_index}")
+            return False
         from src.vision.camera import CameraCapture
 
         if preview_camera is not None:
@@ -259,21 +597,58 @@ def manual_jog_sync(dx: float, dy: float, dz: float, feedrate: int = 600) -> boo
 
 
 def move_to_standby_sync() -> bool:
-    """Move CNC to standby coordinate safely (raise Z first)."""
+    """Move CNC to standby coordinate using calibrated Z reference when available."""
     if not (cnc_controller and cnc_controller.is_connected):
         return False
 
-    ok_up = cnc_controller.move_to(None, None, STANDBY_Z, 1000, True, 30.0)
-    ok_xy = cnc_controller.move_to(STANDBY_X, STANDBY_Y, None, 1000, True, 30.0)
+    z_ref = _get_calibrated_z_reference()
+    ok_up = True
+    if z_ref is not None:
+        ok_up = cnc_controller.move_to(None, None, z_ref, Z_MOVE_FEED, True, 30.0)
+    ok_xy = cnc_controller.move_to(STANDBY_X, STANDBY_Y, None, XY_MOVE_FEED, True, 30.0)
     if not (ok_up and ok_xy):
         return False
 
+    status_now = cnc_controller.query_status_once(1.0)
+    pos = status_now.get("position", {})
     system_state["position"] = {
         "x": STANDBY_X,
         "y": STANDBY_Y,
-        "z": STANDBY_Z,
+        "z": float(pos.get("z", z_ref if z_ref is not None else 0.0)),
     }
     return True
+
+
+def run_preflight_checks_sync() -> Dict[str, Any]:
+    checks: Dict[str, Any] = {
+        "ts": _now_iso(),
+        "config_warnings": _validate_startup_config(),
+        "model_exists": Path(DETECTION_MODEL_PATH).exists(),
+        "calibration_exists": Path(CALIBRATION_AFFINE_PATH).exists(),
+        "transformer_ready": bool(transformer and transformer.is_calibrated),
+        "cnc_connected": bool(cnc_controller and cnc_controller.is_connected),
+        "camera_connected": bool(camera is not None),
+        "camera_frame_ok": False,
+        "workspace_bounds": _resolve_workspace_bounds(),
+    }
+
+    if camera is not None:
+        try:
+            frame = camera.get_frame()
+            checks["camera_frame_ok"] = frame is not None
+        except Exception:
+            checks["camera_frame_ok"] = False
+
+    checks["ok"] = (
+        checks["model_exists"]
+        and checks["calibration_exists"]
+        and checks["transformer_ready"]
+        and checks["cnc_connected"]
+        and checks["camera_connected"]
+        and checks["camera_frame_ok"]
+        and len(checks["config_warnings"]) == 0
+    )
+    return checks
 
 
 def _save_job_overlay_image(
@@ -304,7 +679,7 @@ def _save_job_overlay_image(
 def _find_first_paused_detection_index(
     detections: List[Any],
     first_machine_xy: Tuple[float, float],
-    min_confidence: float = 0.25,
+    min_confidence: float = DETECTION_CONFIDENCE_THRESHOLD,
 ) -> Optional[int]:
     """Find detection index closest to first paused machine point."""
     if not detections or transformer is None:
@@ -372,39 +747,39 @@ async def run_calibrate_flow() -> bool:
     """Calibrate flow: standby -> capture/detect -> keep one -> save -> move CNC to target."""
     if not (camera and detector and transformer):
         system_state["status"] = "NOT_READY"
-        system_state["last_error"] = "Camera/detector/transformer not ready"
+        _set_error("NOT_READY", "Camera/detector/transformer not ready")
         return False
 
     if not (cnc_controller and cnc_controller.is_connected):
         system_state["status"] = "NOT_READY"
-        system_state["last_error"] = "CNC not connected"
+        _set_error("NOT_READY", "CNC not connected")
         return False
 
     # 1) Move to standby first.
     ok_standby = await asyncio.to_thread(move_to_standby_sync)
     if not ok_standby:
         system_state["status"] = "ERROR"
-        system_state["last_error"] = "Failed to move standby before calibrate"
+        _set_error("MOTION_FAIL", "Failed to move standby before calibrate")
         return False
 
     # 2) Capture and detect.
-    frame = await asyncio.to_thread(camera.get_frame)
+    frame = await _retry_async(camera.get_frame, RETRY_CAPTURE, "calibrate_capture")
     if frame is None:
         system_state["status"] = "NO_FRAME"
-        system_state["last_error"] = "No camera frame for calibrate"
+        _set_error("NO_FRAME", "No camera frame for calibrate")
         return False
 
-    detections = await asyncio.to_thread(detector.detect, frame)
+    detections = await _retry_async(detector.detect, RETRY_CAPTURE, "calibrate_detect", frame)
     if not detections:
         system_state["status"] = "NO_POINTS"
-        system_state["last_error"] = "No detection found for calibrate"
+        _set_error("NO_POINTS", "No detection found for calibrate")
         return False
 
     # 3) Keep one pad-hole.
     selected = _select_single_calibration_detection(detections)
     if selected is None:
         system_state["status"] = "NO_POINTS"
-        system_state["last_error"] = "No valid padhole detection"
+        _set_error("NO_POINTS", "No valid padhole detection")
         return False
 
     x1, y1, x2, y2 = selected.bbox
@@ -417,10 +792,13 @@ async def run_calibrate_flow() -> bool:
     )
     if not machine_coords:
         system_state["status"] = "ERROR"
-        system_state["last_error"] = "Transform failed for calibrate point"
+        _set_error("TRANSFORM_FAIL", "Transform failed for calibrate point")
         return False
 
     target_x, target_y = _apply_runtime_offset(machine_coords[0][0], machine_coords[0][1])
+    target_x, target_y, clipped = _apply_soft_limit_xy(target_x, target_y)
+    if clipped:
+        system_state["last_warning"] = "Calibrate target clipped by workspace soft-limit"
 
     # 4) Save temp/calibrate.jpg.
     try:
@@ -430,17 +808,31 @@ async def run_calibrate_flow() -> bool:
         logger.warning(f"Failed to save calibrate image: {e}")
 
     # 5) Move CNC to processed coordinate.
-    ok_up = await asyncio.to_thread(cnc_controller.move_to, None, None, STANDBY_Z, 1000, True, 30.0)
-    ok_xy = await asyncio.to_thread(cnc_controller.move_to, target_x, target_y, None, 1000, True, 30.0)
+    z_ref = _get_calibrated_z_reference()
+    ok_up = True
+    if z_ref is not None:
+        ok_up = await _retry_async(
+            cnc_controller.move_to, RETRY_MOVE, "calibrate_move_z", None, None, z_ref, Z_MOVE_FEED, True, 30.0
+        )
+    ok_xy = await _retry_async(
+        cnc_controller.move_to, RETRY_MOVE, "calibrate_move_xy", target_x, target_y, None, XY_MOVE_FEED, True, 30.0
+    )
     if not (ok_up and ok_xy):
         system_state["status"] = "ERROR"
-        system_state["last_error"] = "CNC move failed for calibrate target"
+        _set_error("MOTION_FAIL", "CNC move failed for calibrate target")
         return False
 
-    system_state["position"] = {"x": float(target_x), "y": float(target_y), "z": STANDBY_Z}
+    status_now = await _retry_async(cnc_controller.query_status_once, RETRY_STATUS, "calibrate_query_status", 1.0)
+    pos = status_now.get("position", {})
+    system_state["position"] = {
+        "x": float(pos.get("x", target_x)),
+        "y": float(pos.get("y", target_y)),
+        "z": float(pos.get("z", z_ref if z_ref is not None else 0.0)),
+    }
     system_state["status"] = "CALIBRATE_DONE"
     system_state["calibrate_target"] = {"x": float(target_x), "y": float(target_y)}
     system_state["last_error"] = None
+    system_state["error_code"] = None
     return True
 
 def init_components():
@@ -449,10 +841,14 @@ def init_components():
 
     _load_runtime_offset()
     system_state["calibrate_offset"] = {"x": CALIB_OFFSET_X, "y": CALIB_OFFSET_Y}
+    startup_warnings = _validate_startup_config()
+    system_state["startup_warnings"] = startup_warnings
+    for warning in startup_warnings:
+        logger.warning(f"Startup validation warning: {warning}")
     
     try:
         from src.vision.transformer import AffineTransformer
-        transformer = AffineTransformer("config/calibration_affine.json")
+        transformer = AffineTransformer(CALIBRATION_AFFINE_PATH)
         transformer.load_calibration()
         
     except Exception as e:
@@ -461,7 +857,11 @@ def init_components():
     
     try:
         from src.cnc.controller import GRBLController
-        cnc_controller = GRBLController()
+        cnc_controller = GRBLController(
+            port=CNC_PORT,
+            baudrate=CNC_BAUDRATE,
+            timeout=CNC_TIMEOUT,
+        )
         if cnc_controller.connect():
             system_state["connected"] = True
             logger.info("CNC connected successfully")
@@ -484,10 +884,10 @@ def init_components():
     
     try:
         from src.vision.camera import CameraCapture
-        camera = CameraCapture(camera_index=4)
+        camera = CameraCapture(camera_index=CAMERA_MAIN_INDEX)
         camera.connect()
         camera.start_streaming()
-        system_state["camera_index"] = 4
+        system_state["camera_index"] = CAMERA_MAIN_INDEX
         system_state["camera_connected"] = True
         logger.info("Camera streaming started")
     except Exception as e:
@@ -498,11 +898,15 @@ def init_components():
     # Preview-only camera starts disconnected by default; user can connect from UI.
     preview_camera = None
     system_state["preview_camera_connected"] = False
-    system_state["preview_camera_index"] = 0
+    system_state["preview_camera_index"] = CAMERA_PREVIEW_INDEX
     
     try:
         from src.vision.detector import YOLODetector
-        detector = YOLODetector(model_path="best.pt", confidence_threshold=0.25, iou_threshold=0.45)
+        detector = YOLODetector(
+            model_path=DETECTION_MODEL_PATH,
+            confidence_threshold=DETECTION_CONFIDENCE_THRESHOLD,
+            iou_threshold=DETECTION_IOU_THRESHOLD,
+        )
         # Lazy-load model on first detect() to keep startup responsive.
         logger.info("Detector initialized (lazy model load)")
     except Exception as e:
@@ -532,15 +936,27 @@ def init_components():
             system_state["last_error"] = "Startup homing failed"
             logger.error("Startup homing failed")
 
+    system_state["preflight"] = run_preflight_checks_sync()
     logger.info("Components initialized (some may be None)")
 
 init_components()
 
 async def run_drill_workflow():
     """Run acquire-detect-transform and pause at first drill point."""
+    global current_job_id
     try:
+        t_total = perf_counter()
+        metrics: Dict[str, float] = {}
+        current_job_id = str(uuid4())[:8]
+        system_state["job_id"] = current_job_id
+        system_state["last_warning"] = None
+        _init_job_telemetry(current_job_id)
+        _log_job_event("job_started", phase="acquire")
+
         if not (camera and detector and transformer):
             system_state["status"] = "NOT_READY"
+            _set_error("NOT_READY", "Camera/detector/transformer not ready")
+            _log_job_event("job_aborted", reason="components_not_ready")
             await broadcast_state()
             return
 
@@ -550,30 +966,53 @@ async def run_drill_workflow():
         system_state["status"] = "ACQUIRING"
         await broadcast_state()
 
-        frame = await asyncio.to_thread(camera.get_frame)
+        t = perf_counter()
+        frame = await _retry_async(camera.get_frame, RETRY_CAPTURE, "camera_capture")
+        _record_metric(metrics, "capture_ms", t)
         if frame is None:
             system_state["status"] = "NO_FRAME"
+            _set_error("NO_FRAME", "Camera frame unavailable")
+            _log_job_event("job_aborted", reason="no_frame")
             await broadcast_state()
             return
 
+        t = perf_counter()
         detections = await asyncio.to_thread(detector.detect, frame)
+        _record_metric(metrics, "detect_ms", t)
         system_state["last_detections"] = len(detections)
+        _log_job_event("detections_done", count=len(detections))
 
         pixel_points = [
             ((d.bbox[0] + d.bbox[2]) / 2, (d.bbox[1] + d.bbox[3]) / 2, d.confidence)
             for d in detections
         ]
-        machine_coords = await asyncio.to_thread(
-            transformer.transform_detections, pixel_points, 0.25
-        )
+        t = perf_counter()
+        machine_coords = []
+        threshold_used = DETECTION_CONFIDENCE_THRESHOLD
+        for i in range(DETECTION_RETRY_COUNT + 1):
+            threshold_now = max(0.05, DETECTION_CONFIDENCE_THRESHOLD - (i * DETECTION_RETRY_STEP))
+            transformed = await asyncio.to_thread(
+                transformer.transform_detections, pixel_points, threshold_now
+            )
+            if len(transformed) >= DETECTION_MIN_POINTS:
+                machine_coords = transformed
+                threshold_used = threshold_now
+                break
+        system_state["detection_threshold_used"] = round(threshold_used, 3)
+        _record_metric(metrics, "transform_ms", t)
+        _log_job_event("transform_done", points=len(machine_coords), threshold=round(threshold_used, 3))
         machine_coords = _apply_runtime_offset_points(machine_coords)
 
         if not (machine_coords and job_manager):
             system_state["status"] = "NO_POINTS"
+            _set_error("NO_POINTS", "No points after detection+transform")
+            _log_job_event("job_aborted", reason="no_points_after_transform")
             await broadcast_state()
             return
 
+        t = perf_counter()
         job = await asyncio.to_thread(job_manager.create_job, machine_coords, True)
+        _record_metric(metrics, "path_plan_ms", t)
         system_state["progress"] = {"current": 0, "total": len(job.points)}
         system_state["status"] = "TRANSFORM"
         await broadcast_state()
@@ -581,12 +1020,16 @@ async def run_drill_workflow():
         if not (cnc_controller and cnc_controller.is_connected):
             system_state["status"] = "SIMULATE"
             system_state["start_state"] = "idle"
+            _set_error("NOT_READY", "CNC not connected")
+            _log_job_event("job_aborted", reason="cnc_not_connected")
             await broadcast_state()
             return
 
         if stop_event.is_set():
             system_state["status"] = "STOPPED"
             system_state["start_state"] = "idle"
+            _set_error("STOPPED", "Workflow stopped before drill")
+            _log_job_event("job_stopped", phase="before_drill")
             await broadcast_state()
             return
 
@@ -599,21 +1042,38 @@ async def run_drill_workflow():
         ok_calc = await asyncio.to_thread(_calculate_work_points)
         if not ok_calc:
             system_state["status"] = "ERROR"
-            system_state["last_error"] = "Failed to calculate work points"
+            _set_error("WORKPOINTS_FAIL", "Failed to calculate work points")
+            _log_job_event("job_failed", reason="calculate_work_points_failed")
             await broadcast_state()
             return
         
         # Load work_points from file
-        await asyncio.sleep(2.0)  # Wait for file to be written
-        
         with open(WORK_POINTS_PATH, "r") as f:
             work_data = json.load(f)
             drill_points = work_data.get("points", [])
+            ref_z_val = work_data.get("cal_offset", {}).get("z")
+            ref_z = float(ref_z_val) if ref_z_val is not None else None
+            ref_z_val = work_data.get("cal_offset", {}).get("z")
+            ref_z = float(ref_z_val) if ref_z_val is not None else None
         
         if not drill_points:
             system_state["status"] = "NO_POINTS"
+            _set_error("NO_POINTS", "Work points empty")
+            _log_job_event("job_aborted", reason="work_points_empty")
             await broadcast_state()
             return
+
+        clipped_count = 0
+        safe_points: List[Tuple[float, float]] = []
+        for raw_x, raw_y in drill_points:
+            sx, sy, clipped = _apply_soft_limit_xy(float(raw_x), float(raw_y))
+            if clipped:
+                clipped_count += 1
+            safe_points.append((sx, sy))
+        drill_points = safe_points
+        if clipped_count > 0:
+            system_state["last_warning"] = f"{clipped_count} point(s) clipped by workspace soft-limit"
+            _log_job_event("soft_limit_clipped", points=clipped_count)
         
         # Save overlay image
         try:
@@ -622,7 +1082,7 @@ async def run_drill_workflow():
                 _find_first_paused_detection_index,
                 detections,
                 (first_x, first_y),
-                0.25,
+                DETECTION_CONFIDENCE_THRESHOLD,
             )
             overlay_path = await asyncio.to_thread(
                 _save_job_overlay_image,
@@ -643,34 +1103,36 @@ async def run_drill_workflow():
         await broadcast_state()
 
         job = await asyncio.to_thread(job_manager.create_job, drill_points, False)
+        dynamic_xy_feed = _dynamic_xy_feed(len(job.points))
 
         # ===== EXECUTE DRILLING =====
+        t_drill = perf_counter()
         for i, point in enumerate(job.points):
             if stop_event.is_set():
                 system_state["status"] = "STOPPED"
                 system_state["start_state"] = "idle"
                 pending_drill_points = []
+                _set_error("STOPPED", f"Stopped at point {i + 1}")
+                _log_job_event("job_stopped", phase="drilling", point=i + 1)
                 await broadcast_state()
                 return
 
-            # Z: relative drill from calibrated Z or current position
+            # Z: relative drill from calibrated Z reference when available.
             z_clear = _get_cfg("drill.z_clearance", 5.0)
             z_drill_depth = _get_cfg("drill.z_depth", 1.5)
+            clearance_z = (float(ref_z) + z_clear) if ref_z is not None else z_clear
             
             # Move to XY first at clearance height
-            ok_xy = await asyncio.to_thread(
-                cnc_controller.move_to, point.x, point.y, z_clear, 1000, True, 30.0
+            safe_x, safe_y, clipped = _apply_soft_limit_xy(point.x, point.y)
+            if clipped:
+                system_state["last_warning"] = f"Point {i + 1} clipped by workspace soft-limit"
+                _log_job_event("soft_limit_clipped", point=i + 1)
+            ok_xy = await _retry_async(
+                cnc_controller.move_to, RETRY_MOVE, "move_xy", safe_x, safe_y, clearance_z, dynamic_xy_feed, True, 30.0
             )
             
-            # Load Z reference from work_points file
-            ref_z = None
-            if WORK_POINTS_PATH.exists():
-                with open(WORK_POINTS_PATH, "r") as f:
-                    work_data = json.load(f)
-                    ref_z = work_data.get("cal_offset", {}).get("z")
-            
             # Get current Z or use calibrated reference
-            status_z = await asyncio.to_thread(cnc_controller.query_status_once, 1.0)
+            status_z = await _retry_async(cnc_controller.query_status_once, RETRY_STATUS, "query_status", 1.0)
             current_z = float(status_z.get("position", {}).get("z", 0.0))
             
             if ref_z is not None:
@@ -679,78 +1141,96 @@ async def run_drill_workflow():
                 target_z = current_z - z_drill_depth
             
             # Drill down
-            ok_down = await asyncio.to_thread(
-                cnc_controller.move_to, None, None, target_z, 300, True, 30.0
+            ok_down = await _retry_async(
+                cnc_controller.move_to, RETRY_MOVE, "move_z_down", None, None, target_z, Z_DRILL_FEED, True, 30.0
             )
             # Move back up to clearance
-            ok_up = await asyncio.to_thread(
-                cnc_controller.move_to, None, None, z_clear, 1000, True, 30.0
+            ok_up = await _retry_async(
+                cnc_controller.move_to, RETRY_MOVE, "move_z_up", None, None, clearance_z, Z_MOVE_FEED, True, 30.0
             )
 
             if not (ok_xy and ok_down and ok_up):
                 system_state["status"] = "ERROR"
-                system_state["last_error"] = f"Motion failed at point {i + 1}"
+                _set_error("MOTION_FAIL", f"Motion failed at point {i + 1}")
+                _log_job_event("job_failed", reason="motion_failed", point=i + 1)
                 await broadcast_state()
                 return
 
             job.mark_drilled(i)
+            _log_job_event("point_drilled", point=i + 1, total=len(job.points))
             system_state["progress"] = {"current": i + 1, "total": len(job.points)}
             await broadcast_state()
 
-        await asyncio.to_thread(cnc_controller.move_to, None, None, 10.0, 1000, True, 30.0)
+        _record_metric(metrics, "drill_loop_ms", t_drill)
         system_state["status"] = "COMPLETE"
+        _log_job_event("job_complete", drilled=len(job.points))
         await broadcast_state()
 
         # End flow: return machine to STANDBY position
         system_state["status"] = "STANDBY"
         await broadcast_state()
         
-        ok_standby = await asyncio.to_thread(cnc_controller.move_to, STANDBY_X, STANDBY_Y, None, 1000, True, 30.0)
+        ok_standby = await asyncio.to_thread(move_to_standby_sync)
         if ok_standby:
-            system_state["position"] = {"x": STANDBY_X, "y": STANDBY_Y, "z": 10.0}
             system_state["status"] = "IDLE"
             system_state["last_error"] = None
+            system_state["error_code"] = None
         else:
             system_state["status"] = "ERROR"
-            system_state["last_error"] = "Failed to move to standby after drill"
+            _set_error("MOTION_FAIL", "Failed to move to standby after drill")
         system_state["start_state"] = "idle"
         pending_drill_points = []
+        _record_metric(metrics, "total_ms", t_total)
+        system_state["last_metrics"] = metrics
+        _log_job_event("metrics", **metrics)
+        _set_last_job_summary("complete", points=len(job.points), metrics=metrics)
         await broadcast_state()
 
     except Exception as e:
         logger.exception("Workflow failed")
         system_state["status"] = "ERROR"
-        system_state["last_error"] = str(e)
+        _set_error("SYSTEM_ERROR", str(e))
         system_state["start_state"] = "idle"
+        _log_job_event("job_failed", reason="exception", detail=str(e))
+        _set_last_job_summary("failed")
         await broadcast_state()
 
 
 async def continue_drill_workflow():
     """Drill using work_points from file (last_job_points + cal_offset)."""
-    global pending_drill_points
+    global pending_drill_points, current_job_id
     try:
+        t_total = perf_counter()
+        metrics: Dict[str, float] = {}
+        if not current_job_id:
+            current_job_id = str(uuid4())[:8]
+            system_state["job_id"] = current_job_id
+            _init_job_telemetry(current_job_id)
+        _log_job_event("continue_drill_started")
+
         if not pending_drill_points:
             system_state["status"] = "NO_POINTS"
-            system_state["last_error"] = "No pending drill points"
+            _set_error("NO_POINTS", "No pending drill points")
+            _log_job_event("job_aborted", reason="no_pending_points")
             await broadcast_state()
             return
 
         if not (cnc_controller and cnc_controller.is_connected):
             system_state["status"] = "NOT_READY"
-            system_state["last_error"] = "CNC not connected"
+            _set_error("NOT_READY", "CNC not connected")
             await broadcast_state()
             return
 
         if not job_manager:
             system_state["status"] = "NOT_READY"
-            system_state["last_error"] = "Job manager not ready"
+            _set_error("NOT_READY", "Job manager not ready")
             await broadcast_state()
             return
 
         # Load work_points from file
         if not WORK_POINTS_PATH.exists():
             system_state["status"] = "NO_POINTS"
-            system_state["last_error"] = "No work points file"
+            _set_error("NO_POINTS", "No work points file")
             await broadcast_state()
             return
 
@@ -760,15 +1240,33 @@ async def continue_drill_workflow():
 
         if not drill_points:
             system_state["status"] = "NO_POINTS"
+            _set_error("NO_POINTS", "Work points empty")
+            _log_job_event("job_aborted", reason="work_points_empty")
             await broadcast_state()
             return
 
+        clipped_count = 0
+        safe_points: List[Tuple[float, float]] = []
+        for raw_x, raw_y in drill_points:
+            sx, sy, clipped = _apply_soft_limit_xy(float(raw_x), float(raw_y))
+            if clipped:
+                clipped_count += 1
+            safe_points.append((sx, sy))
+        drill_points = safe_points
+        if clipped_count > 0:
+            system_state["last_warning"] = f"{clipped_count} point(s) clipped by workspace soft-limit"
+            _log_job_event("soft_limit_clipped", points=clipped_count)
+
+        t = perf_counter()
         job = await asyncio.to_thread(job_manager.create_job, drill_points, False)
+        _record_metric(metrics, "path_plan_ms", t)
+        dynamic_xy_feed = _dynamic_xy_feed(len(job.points))
         system_state["progress"] = {"current": 0, "total": len(job.points)}
         system_state["status"] = "DRILLING"
         system_state["start_state"] = "drilling"
         await broadcast_state()
 
+        t_drill = perf_counter()
         for i, point in enumerate(job.points):
             if stop_event.is_set():
                 system_state["status"] = "STOPPED"
@@ -777,68 +1275,84 @@ async def continue_drill_workflow():
                 jog_offset["x"] = 0.0
                 jog_offset["y"] = 0.0
                 jog_offset["z"] = 0.0
+                _set_error("STOPPED", f"Stopped at point {i + 1}")
+                _log_job_event("job_stopped", phase="continue_drill", point=i + 1)
                 await broadcast_state()
                 return
 
-            # Z: relative drill -1.5mm from current position
+            # Z: relative drill from calibrated Z reference when available.
             z_clear = _get_cfg("drill.z_clearance", 5.0)
-            z_drill_depth = _get_cfg("drill.z_depth", 1.5)  # Relative: drill down from current Z
+            z_drill_depth = _get_cfg("drill.z_depth", 1.5)
+            clearance_z = (float(ref_z) + z_clear) if ref_z is not None else z_clear
             
             # Move to XY first at clearance height
-            ok_xy = await asyncio.to_thread(
-                cnc_controller.move_to, point.x, point.y, z_clear, 1000, True, 30.0
+            safe_x, safe_y, clipped = _apply_soft_limit_xy(point.x, point.y)
+            if clipped:
+                system_state["last_warning"] = f"Point {i + 1} clipped by workspace soft-limit"
+                _log_job_event("soft_limit_clipped", point=i + 1)
+            ok_xy = await _retry_async(
+                cnc_controller.move_to, RETRY_MOVE, "continue_move_xy", safe_x, safe_y, clearance_z, dynamic_xy_feed, True, 30.0
             )
             
-            # Get current Z and calculate relative drill depth
-            status_z = await asyncio.to_thread(cnc_controller.query_status_once, 1.0)
+            # Get current Z and calculate drill depth relative to reference/current.
+            status_z = await _retry_async(cnc_controller.query_status_once, RETRY_STATUS, "continue_query_status", 1.0)
             current_z = float(status_z.get("position", {}).get("z", 0.0))
-            target_z = current_z - z_drill_depth
+            target_z = (float(ref_z) - z_drill_depth) if ref_z is not None else (current_z - z_drill_depth)
             
             # Drill down relative
-            ok_down = await asyncio.to_thread(
-                cnc_controller.move_to, None, None, target_z, 300, True, 30.0
+            ok_down = await _retry_async(
+                cnc_controller.move_to, RETRY_MOVE, "continue_move_z_down", None, None, target_z, Z_DRILL_FEED, True, 30.0
             )
             # Move back up to clearance
-            ok_up = await asyncio.to_thread(
-                cnc_controller.move_to, None, None, z_clear, 1000, True, 30.0
+            ok_up = await _retry_async(
+                cnc_controller.move_to, RETRY_MOVE, "continue_move_z_up", None, None, clearance_z, Z_MOVE_FEED, True, 30.0
             )
 
             if not (ok_xy and ok_down and ok_up):
                 system_state["status"] = "ERROR"
-                system_state["last_error"] = f"Motion failed at point {i + 1}"
+                _set_error("MOTION_FAIL", f"Motion failed at point {i + 1}")
+                _log_job_event("job_failed", reason="motion_failed", point=i + 1)
                 await broadcast_state()
                 return
 
             job.mark_drilled(i)
+            _log_job_event("point_drilled", point=i + 1, total=len(job.points))
             system_state["progress"] = {"current": i + 1, "total": len(job.points)}
             await broadcast_state()
 
-        await asyncio.to_thread(cnc_controller.move_to, None, None, 10.0, 1000, True, 30.0)
+        _record_metric(metrics, "drill_loop_ms", t_drill)
         system_state["status"] = "COMPLETE"
+        _log_job_event("job_complete", drilled=len(job.points))
         await broadcast_state()
 
         # End flow: return machine to STANDBY position
         system_state["status"] = "STANDBY"
         await broadcast_state()
         
-        ok_standby = await asyncio.to_thread(cnc_controller.move_to, STANDBY_X, STANDBY_Y, None, 1000, True, 30.0)
+        ok_standby = await asyncio.to_thread(move_to_standby_sync)
         if ok_standby:
-            system_state["position"] = {"x": STANDBY_X, "y": STANDBY_Y, "z": 10.0}
             system_state["status"] = "IDLE"
             system_state["last_error"] = None
+            system_state["error_code"] = None
         else:
             system_state["status"] = "ERROR"
-            system_state["last_error"] = "Failed to move to standby after drill"
+            _set_error("MOTION_FAIL", "Failed to move to standby after drill")
         system_state["start_state"] = "idle"
         pending_drill_points = []
+        _record_metric(metrics, "total_ms", t_total)
+        system_state["last_metrics"] = metrics
+        _log_job_event("metrics", **metrics)
+        _set_last_job_summary("complete", points=len(job.points), metrics=metrics)
         await broadcast_state()
 
     except Exception as e:
         logger.exception("Workflow failed")
         system_state["status"] = "ERROR"
-        system_state["last_error"] = str(e)
+        _set_error("SYSTEM_ERROR", str(e))
         system_state["start_state"] = "idle"
         pending_drill_points = []
+        _log_job_event("job_failed", reason="exception", detail=str(e))
+        _set_last_job_summary("failed")
         await broadcast_state()
 
 # ==================== WebSocket ====================
@@ -905,6 +1419,18 @@ async def websocket_endpoint(websocket: WebSocket):
                 
             elif cmd == "pause":
                 system_state["status"] = "PAUSED"
+                await broadcast_state()
+
+            elif cmd == "preflight":
+                system_state["status"] = "PRECHECK_RUNNING"
+                await broadcast_state()
+                checks = await asyncio.to_thread(run_preflight_checks_sync)
+                system_state["preflight"] = checks
+                system_state["status"] = "PRECHECK_OK" if checks.get("ok") else "PRECHECK_FAIL"
+                if checks.get("ok"):
+                    system_state["last_error"] = None
+                else:
+                    system_state["last_error"] = "Preflight failed. Check preflight details."
                 await broadcast_state()
 
             elif cmd == "home":
@@ -1075,7 +1601,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 system_state["status"] = "CALIBRATE_RUNNING"
                 await broadcast_state()
 
-                ok_calibrate = await run_calibrate_flow()
+                try:
+                    ok_calibrate = await asyncio.wait_for(
+                        run_calibrate_flow(),
+                        timeout=CALIBRATE_TIMEOUT_SEC,
+                    )
+                except asyncio.TimeoutError:
+                    ok_calibrate = False
+                    system_state["status"] = "ERROR"
+                    _set_error("TIMEOUT", f"Calibrate timeout after {CALIBRATE_TIMEOUT_SEC:.1f}s")
                 if ok_calibrate:
                     system_state["calibrate_state"] = "done"
                 else:
@@ -1289,6 +1823,19 @@ async def preview_video_stream():
 async def get_status():
     """Get current system status"""
     return system_state
+
+@app.get("/api/preflight")
+async def get_preflight():
+    """Run preflight checks and return detail result."""
+    checks = await asyncio.to_thread(run_preflight_checks_sync)
+    system_state["preflight"] = checks
+    return checks
+
+
+@app.get("/api/metrics")
+async def get_metrics(date_utc: Optional[str] = None):
+    """Get summarized job metrics from telemetry logs."""
+    return await asyncio.to_thread(_summarize_metrics, date_utc)
 
 @app.post("/api/control/start")
 async def start_drill():

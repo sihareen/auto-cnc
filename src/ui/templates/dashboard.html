@@ -348,6 +348,41 @@
             overflow: hidden;
         }
 
+        .wizard-text {
+            font-family: var(--mono);
+            font-size: 12px;
+            color: var(--text-2);
+            line-height: 1.6;
+        }
+
+        .wizard-step {
+            font-weight: 700;
+            color: var(--blue);
+            margin-bottom: 6px;
+        }
+
+        .wizard-hint {
+            color: var(--text-2);
+        }
+
+        .summary-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px 10px;
+            font-family: var(--mono);
+            font-size: 12px;
+        }
+
+        .summary-grid .k {
+            color: var(--text-3);
+        }
+
+        .summary-grid .v {
+            text-align: right;
+            color: var(--text-2);
+            font-weight: 700;
+        }
+
         .progress-fill {
             height: 100%;
             width: 0%;
@@ -581,6 +616,38 @@
                                     <td>Z (mm)</td>
                                     <td id="pos-z">0.0</td>
                                 </tr>
+                                <tr>
+                                    <td>Job</td>
+                                    <td id="job-id">-</td>
+                                </tr>
+                                <tr>
+                                    <td>Preflight</td>
+                                    <td id="preflight-status">N/A</td>
+                                </tr>
+                                <tr>
+                                    <td>Warning</td>
+                                    <td id="last-warning">-</td>
+                                </tr>
+                                <tr>
+                                    <td>Error</td>
+                                    <td id="last-error">-</td>
+                                </tr>
+                                <tr>
+                                    <td>ErrCode</td>
+                                    <td id="error-code">-</td>
+                                </tr>
+                                <tr>
+                                    <td>DetThr</td>
+                                    <td id="det-thr">-</td>
+                                </tr>
+                                <tr>
+                                    <td>TotalMs</td>
+                                    <td id="metric-total-ms">-</td>
+                                </tr>
+                                <tr>
+                                    <td>DrillMs</td>
+                                    <td id="metric-drill-ms">-</td>
+                                </tr>
                             </tbody>
                         </table>
                     </div>
@@ -594,6 +661,24 @@
                         </div>
                         <div class="progress-bar" aria-label="Progress">
                             <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">Operation Wizard</div>
+                    <div class="panel-body wizard-text">
+                        <div class="wizard-step" id="wizard-step">Step 1/4: Run CHECK preflight</div>
+                        <div class="wizard-hint" id="wizard-hint">Follow sequence: CHECK -> START -> START -> Done.</div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">Last Job Summary</div>
+                    <div class="panel-body">
+                        <div class="summary-grid">
+                            <div class="k">Job</div><div class="v" id="sum-job">-</div>
+                            <div class="k">Status</div><div class="v" id="sum-status">-</div>
+                            <div class="k">Points</div><div class="v" id="sum-points">-</div>
+                            <div class="k">Total (ms)</div><div class="v" id="sum-totalms">-</div>
                         </div>
                     </div>
                 </div>
@@ -717,6 +802,7 @@
                             <button class="btn btn-blue" data-requires-ws id="btn-home">HOME</button>
                             <button class="btn btn-blue" data-requires-ws id="btn-standby">STANDBY</button>
                             <button class="btn btn-blue" data-requires-ws id="btn-unlock">UNLOCK</button>
+                            <button class="btn btn-blue" data-requires-ws id="btn-preflight">CHECK</button>
                             <button class="btn btn-amber" data-requires-ws id="btn-reset">RESET</button>
                         </div>
                     </div>
@@ -729,6 +815,8 @@
         let ws;
         let reconnectTimer = null;
         let reconnectAttempts = 0;
+        let latestState = {};
+        let wsOnline = false;
 
         const MAX_LOG_ITEMS = 250;
         const connDot = document.getElementById('conn-dot');
@@ -756,6 +844,29 @@
 
         const wsBoundButtons = document.querySelectorAll('[data-requires-ws]');
 
+        const guardButtonIds = [
+            'btn-start',
+            'btn-stop',
+            'btn-calibrate',
+            'btn-home',
+            'btn-standby',
+            'btn-unlock',
+            'btn-preflight',
+            'btn-reset',
+            'btn-camera-connect',
+            'btn-preview-camera-connect',
+            'btn-jog-xy-up-left',
+            'btn-jog-y-plus',
+            'btn-jog-xy-up-right',
+            'btn-jog-x-minus',
+            'btn-jog-x-plus',
+            'btn-jog-xy-down-left',
+            'btn-jog-y-minus',
+            'btn-jog-xy-down-right',
+            'btn-jog-z-plus',
+            'btn-jog-z-minus'
+        ];
+
         function isWsOpen() {
             return ws && ws.readyState === WebSocket.OPEN;
         }
@@ -766,12 +877,98 @@
             });
         }
 
+        function setButtonEnabled(id, enabled) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.disabled = !enabled;
+        }
+
+        function applyControlGuards(data) {
+            const status = String(data.status || '').toUpperCase();
+            const startState = String(data.start_state || '').toLowerCase();
+            const busyStatuses = new Set([
+                'DRILLING', 'ACQUIRING', 'TRANSFORM', 'CALIBRATE_RUNNING',
+                'HOMING', 'RESETTING', 'CAMERA_CONNECTING', 'PRECHECK_RUNNING', 'BUSY'
+            ]);
+            const isBusy = busyStatuses.has(status);
+            const isDrilling = status === 'DRILLING';
+
+            guardButtonIds.forEach((id) => setButtonEnabled(id, wsOnline));
+            if (!wsOnline) return;
+
+            setButtonEnabled('btn-preflight', !isBusy);
+            setButtonEnabled('btn-start', !isBusy && (startState === 'idle' || startState === 'standby_ready' || startState === ''));
+            setButtonEnabled('btn-stop', isBusy || isDrilling || status === 'STANDBY_MOVING');
+            setButtonEnabled('btn-calibrate', !isBusy && !isDrilling);
+            setButtonEnabled('btn-home', !isBusy && !isDrilling);
+            setButtonEnabled('btn-standby', !isBusy && !isDrilling);
+            setButtonEnabled('btn-unlock', !isBusy && !isDrilling);
+            setButtonEnabled('btn-reset', !isBusy || status === 'ERROR');
+            setButtonEnabled('btn-camera-connect', !isBusy && !isDrilling);
+            setButtonEnabled('btn-preview-camera-connect', !isBusy && !isDrilling);
+
+            const jogEnabled = !isBusy && !isDrilling && !!data.connected;
+            [
+                'btn-jog-xy-up-left', 'btn-jog-y-plus', 'btn-jog-xy-up-right',
+                'btn-jog-x-minus', 'btn-jog-x-plus', 'btn-jog-xy-down-left',
+                'btn-jog-y-minus', 'btn-jog-xy-down-right', 'btn-jog-z-plus', 'btn-jog-z-minus'
+            ].forEach((id) => setButtonEnabled(id, jogEnabled));
+        }
+
+        function renderWizard(data) {
+            const stepEl = document.getElementById('wizard-step');
+            const hintEl = document.getElementById('wizard-hint');
+            const status = String(data.status || '').toUpperCase();
+            const startState = String(data.start_state || '').toLowerCase();
+            const preOk = data.preflight?.ok === true;
+
+            if (!preOk) {
+                stepEl.textContent = 'Step 1/4: Run CHECK preflight';
+                hintEl.textContent = 'Pastikan model, calibration, camera, CNC semua OK.';
+                return;
+            }
+            if (startState === 'idle' && (status === 'IDLE' || status === 'STANDBY')) {
+                stepEl.textContent = 'Step 2/4: Press START (move standby)';
+                hintEl.textContent = 'Klik START pertama untuk posisi aman sebelum capture.';
+                return;
+            }
+            if (startState === 'standby_ready' || status === 'STANDBY_READY') {
+                stepEl.textContent = 'Step 3/4: Press START (capture + drill)';
+                hintEl.textContent = 'Klik START kedua untuk capture, detect, lalu drilling otomatis.';
+                return;
+            }
+            if (status === 'ACQUIRING' || status === 'TRANSFORM' || status === 'DRILLING') {
+                stepEl.textContent = 'Step 3/4: Processing job';
+                hintEl.textContent = 'Sistem sedang capture/transform/drill. Monitor progress.';
+                return;
+            }
+            if (status === 'COMPLETE' || (data.last_job_summary && data.last_job_summary.status === 'complete')) {
+                stepEl.textContent = 'Step 4/4: Job done';
+                hintEl.textContent = 'Review summary. Jika perlu koreksi posisi, jalankan CALIBRATE.';
+                return;
+            }
+            stepEl.textContent = 'Wizard: Ready';
+            hintEl.textContent = 'Gunakan CHECK lalu START sesuai urutan.';
+        }
+
+        function renderLastSummary(data) {
+            const summary = data.last_job_summary || {};
+            document.getElementById('sum-job').textContent = summary.job_id || '-';
+            document.getElementById('sum-status').textContent = summary.status || '-';
+            document.getElementById('sum-points').textContent =
+                (typeof summary.points === 'number') ? String(summary.points) : '-';
+            document.getElementById('sum-totalms').textContent =
+                (typeof summary.total_ms === 'number') ? summary.total_ms.toFixed(1) : '-';
+        }
+
         function setConnectionState(online) {
             connDot.classList.toggle('online', online);
             connDot.classList.toggle('offline', !online);
             connText.textContent = online ? 'Connected' : 'Disconnected';
             videoCaption.textContent = online ? 'Stream active' : 'Waiting stream';
+            wsOnline = online;
             setWsDependentControls(online);
+            applyControlGuards(latestState);
         }
 
         function formatNow() {
@@ -836,11 +1033,29 @@
         }
 
         function updateUI(data) {
+            latestState = data || {};
             updateMachineStatus(data.status || 'IDLE');
             document.getElementById('exec-state').textContent = data.execution_state ?? '0';
             document.getElementById('pos-x').textContent = safeNumber(data.position?.x, 0).toFixed(1);
             document.getElementById('pos-y').textContent = safeNumber(data.position?.y, 0).toFixed(1);
             document.getElementById('pos-z').textContent = safeNumber(data.position?.z, 0).toFixed(1);
+            document.getElementById('job-id').textContent = data.job_id || '-';
+            document.getElementById('last-warning').textContent = data.last_warning || '-';
+            document.getElementById('last-error').textContent = data.last_error || '-';
+            document.getElementById('error-code').textContent = data.error_code || '-';
+            document.getElementById('det-thr').textContent =
+                (typeof data.detection_threshold_used === 'number')
+                    ? data.detection_threshold_used.toFixed(3)
+                    : '-';
+            document.getElementById('metric-total-ms').textContent =
+                (typeof data.last_metrics?.total_ms === 'number') ? data.last_metrics.total_ms.toFixed(1) : '-';
+            document.getElementById('metric-drill-ms').textContent =
+                (typeof data.last_metrics?.drill_loop_ms === 'number') ? data.last_metrics.drill_loop_ms.toFixed(1) : '-';
+            document.getElementById('preflight-status').textContent = data.preflight?.ok === true ? 'OK' :
+                (data.preflight?.ok === false ? 'FAIL' : 'N/A');
+            renderWizard(data);
+            renderLastSummary(data);
+            applyControlGuards(data);
 
             if (typeof data.camera_index !== 'undefined') {
                 document.getElementById('camera-index').value = String(data.camera_index);
@@ -995,6 +1210,10 @@
 
         document.getElementById('btn-unlock').onclick = function() {
             sendCommand({ command: 'unlock' }, 'Unlock command sent');
+        };
+
+        document.getElementById('btn-preflight').onclick = function() {
+            sendCommand({ command: 'preflight' }, 'Preflight check command sent');
         };
 
         document.getElementById('btn-camera-connect').onclick = function() {

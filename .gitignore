@@ -24,13 +24,14 @@ share/python-wheels/
 MANIFEST
 
 # Project
-yolov7/
+yolov7/*
 logs/*
 !logs/.gitkeep
 jobs/*
 !jobs/.gitkeep
 calibration/*
 !calibration/.gitkeep
+useless/*
 
 # Environment variables
 .env
