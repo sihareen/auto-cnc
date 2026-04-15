@@ -27,44 +27,72 @@ pip install -r requirements.txt
 
 Requirements: Python 3.14+, OpenCV, PyTorch, PySerial, FastAPI
 
+## Konfigurasi
+
+Edit `config/config.json` untuk configure:
+
+```json
+{
+  "cnc": {"port": "/dev/ttyUSB0", "baudrate": 115200},
+  "camera": {"main_index": 4, "preview_index": 0},
+  "standby": {"x": 85.0, "y": -95.0},
+  "drill": {"z_depth": 1.5, "z_clearance": 5.0},
+  ...
+}
+```
+
 ## Usage
 
-### 3-Click Drill Workflow
+### Mode Auto (2-Click Drill)
 
-1. **START** → Machine move ke standby position (Z-up, XY standby)
-2. **START** → Capture image, YOLOv7 detect padholes, move ke first padhole (bbox merah), **PAUSE**
-3. **Jog Manual** → Adjust posisi drill dengan jog control (x, y, z) sampai tepat di target
-4. **START** → Drill semua hole dengan work coordinate (original + jog offset), return HOME
+| Click | Action |
+|-------|--------|
+| 1 | START → Move ke standby (X85, Y-95) |
+| 2 | START → Capture → Drill semua hole → Return standby |
 
-### Jog Offset Adjustment
+### Mode Calibrate (Set Offset)
 
-Saat status `PAUSED_AT_PADHOLE`, setiap jog movement (x/y/z) diakumulasi sebagai offset. Offset ini:
-- Ditambahkan ke semua drill points (x, y)
-- Ditambahkan ke Z depth dan clearance (z)
+| Click | Action |
+|-------|--------|
+| 1 | CALIBRATE → Capture, move ke padhole → PAUSE |
+| 2 | (Optional) Jog X/Y/Z ke posisi actual |
+| 2 | CALIBRATE → Simpan offset (X, Y, Z) ke `cal_offset.json` |
 
-Offset tersimpan di `config/work_points.json`.
+**Z Calibration:**
+- Jog spindle turun ke surface PCB
+- Jog X/Y ke target hole
+- CALIBRATE → Simpan posisi sebagai reference
+- Saat drill, Z relatif dari posisi yang sudah di-reference
 
-### Kalibrasi
+### Button Functions
 
-1. Place PCB di workspace
-2. Klik **CALIBRATE** → system detect padhole dan move ke posisi kalkulasi
-3. Jog manual ke posisi actual drill point
-4. Klik **CALIBRATE** lagi → residual offset disimpan ke `config/calibration_runtime_offset.json`
+| Button | Fungsi |
+|--------|--------|
+| START | 2-click drill workflow |
+| STOP | Stop execution |
+| CALIBRATE | Set offset (X, Y, Z) |
+| HOME | CNC homing (X, Y, Z) |
+| STANDBY | Move ke posisi standby |
+| UNLOCK | Unlock GRBL |
+| RESET | Stop workflow + clear offsets + recover CNC |
+
+## Files
+
+| File | Fungsi |
+|------|--------|
+| `config/config.json` | System configuration |
+| `config/calibration_affine.json` | Affine transformation matrix |
+| `config/last_job_points.json` | Original drill points |
+| `config/cal_offset.json` | X, Y, Z offset dari CALIBRATE |
+| `config/work_points.json` | last_job_points + cal_offset |
 
 ## State Machine
 
 ```
-IDLE → STANDBY → STANDBY_READY → ACQUIRING → TRANSFORM → PAUSED_AT_PADHOLE → DRILLING → HOME
+IDLE → STANDBY → STANDBY_READY → ACQUIRING → DRILLING → STANDBY
+                     ↓
+              CALIBRATE (PAUSE)
 ```
-
-## Konfigurasi
-
-| File | Fungsi |
-|------|--------|
-| `config/calibration_affine.json` | Affine transformation matrix (pixel → machine coords) |
-| `config/calibration_runtime_offset.json` | Runtime XY offset dari kalibrasi |
-| `config/last_job_points.json` | Last captured drill points |
-| `config/work_points.json` | Work points dengan jog offset |
 
 ## Error Handling
 

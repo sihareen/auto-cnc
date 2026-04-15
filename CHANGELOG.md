@@ -1,5 +1,12 @@
 # Changelog
 
+### [2026-04-15]
+- **feat(calibrate):** add Z calibration - X, Y, Z offset saved to cal_offset.json
+- **feat(config):** add config.json for system configuration
+- **change(drill):** Z is now relative from calibrated position
+- **change(workflow):** 2-click auto mode (no pause between capture and drill)
+- **feat(ui):** add CALIBRATE button, remove RESET OFFSET button
+
 ### [2026-04-14]
 - **refactor(ui):** replace RESET OFFSET with UNLOCK button, auto-clear calib offset in RESET
 - **fix(cnc):** unlock GRBL ($X) before homing to prevent error 8
