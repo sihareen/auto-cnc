@@ -56,6 +56,7 @@ CALIBRATE_IMAGE_PATH = TEMP_DIR / "calibrate.jpg"
 LAST_JOB_POINTS_PATH = Path("config/last_job_points.json")
 WORK_POINTS_PATH = Path("config/work_points.json")
 CALIB_OFFSET_PATH = Path("config/calibration_runtime_offset.json")
+CAL_OFFSET_PATH = Path("config/cal_offset.json")
 CALIB_OFFSET_X = 0.0
 CALIB_OFFSET_Y = 0.0
 DASHBOARD_HTML_PATH = Path(__file__).resolve().parent / "templates" / "dashboard.html"
@@ -100,22 +101,46 @@ def _save_last_job_points():
         logger.warning(f"Failed to save last job points: {e}")
 
 
-def _save_work_points():
-    """Persist work points (pending + jog offset) to config/work_points.json."""
+def _calculate_work_points():
+    """Calculate work_points = last_job_points + cal_offset and save to work_points.json."""
     try:
-        WORK_POINTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        work_pts = [
-            (px + jog_offset["x"], py + jog_offset["y"])
-            for px, py in pending_drill_points
+        # Load last_job_points
+        if not LAST_JOB_POINTS_PATH.exists():
+            logger.warning("last_job_points.json not found")
+            return False
+        
+        with open(LAST_JOB_POINTS_PATH, "r") as f:
+            data = json.load(f)
+            last_points = data.get("points", [])
+        
+        # Load cal_offset
+        cal_offset_x = 0.0
+        cal_offset_y = 0.0
+        if CAL_OFFSET_PATH.exists():
+            with open(CAL_OFFSET_PATH, "r") as f:
+                cal_data = json.load(f)
+                cal_offset_x = float(cal_data.get("x", 0.0))
+                cal_offset_y = float(cal_data.get("y", 0.0))
+        
+        # Calculate work_points
+        work_points = [
+            (px + cal_offset_x, py + cal_offset_y)
+            for px, py in last_points
         ]
+        
+        # Save to work_points.json
+        WORK_POINTS_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(WORK_POINTS_PATH, "w") as f:
             json.dump({
-                "points": work_pts,
-                "jog_offset": dict(jog_offset)
+                "points": work_points,
+                "cal_offset": {"x": cal_offset_x, "y": cal_offset_y}
             }, f, indent=2)
-        logger.info(f"Saved {len(work_pts)} work points with offset {jog_offset}")
+        
+        logger.info(f"Calculated work_points with cal_offset: X{cal_offset_x:.3f} Y{cal_offset_y:.3f}")
+        return True
     except Exception as e:
-        logger.warning(f"Failed to save work points: {e}")
+        logger.warning(f"Failed to calculate work points: {e}")
+        return False
 
 
 def _apply_runtime_offset(x: float, y: float) -> Tuple[float, float]:
@@ -538,19 +563,34 @@ async def run_drill_workflow():
             await broadcast_state()
             return
 
-        # START phase-1: stop at first padhole, wait second START to continue drilling.
+        # START click #2: capture → calculate work_points → drill directly
         global pending_drill_points
         pending_drill_points = [(float(p.x), float(p.y)) for p in job.points]
         _save_last_job_points()
-        first_x, first_y = pending_drill_points[0]
-        ok_first = await asyncio.to_thread(cnc_controller.move_to, first_x, first_y, 5.0, 1000, True, 30.0)
-        if not ok_first:
+        
+        # Calculate work_points = last_job_points + cal_offset
+        ok_calc = await asyncio.to_thread(_calculate_work_points)
+        if not ok_calc:
             system_state["status"] = "ERROR"
-            system_state["last_error"] = "Failed to move first padhole"
+            system_state["last_error"] = "Failed to calculate work points"
             await broadcast_state()
             return
-
+        
+        # Load work_points from file
+        await asyncio.sleep(2.0)  # Wait for file to be written
+        
+        with open(WORK_POINTS_PATH, "r") as f:
+            work_data = json.load(f)
+            drill_points = work_data.get("points", [])
+        
+        if not drill_points:
+            system_state["status"] = "NO_POINTS"
+            await broadcast_state()
+            return
+        
+        # Save overlay image
         try:
+            first_x, first_y = drill_points[0]
             highlighted_idx = await asyncio.to_thread(
                 _find_first_paused_detection_index,
                 detections,
@@ -565,19 +605,17 @@ async def run_drill_workflow():
             )
             system_state["last_capture_image"] = overlay_path
             system_state["last_detection_image"] = overlay_path
-            logger.info(
-                f"Saved job overlay image: {overlay_path} (highlight_idx={highlighted_idx})"
-            )
+            logger.info(f"Saved job overlay image: {overlay_path}")
         except Exception as e:
             logger.warning(f"Failed to save job overlay image: {e}")
 
-        system_state["position"] = {"x": first_x, "y": first_y, "z": 5.0}
-        system_state["status"] = "PAUSED_AT_PADHOLE"
-        system_state["start_state"] = "paused_at_point"
-        system_state["last_error"] = None
-        _save_work_points()
-        await broadcast_state()
-        return
+        # Directly drill without pause
+        system_state["status"] = "DRILLING"
+        system_state["start_state"] = "drilling"
+        system_state["progress"] = {"current": 0, "total": len(drill_points)}
+        broadcast_state()
+
+        job = await asyncio.to_thread(job_manager.create_job, drill_points, False)
 
     except Exception as e:
         logger.exception("Workflow failed")
@@ -588,8 +626,8 @@ async def run_drill_workflow():
 
 
 async def continue_drill_workflow():
-    """Continue full drilling after operator confirms with second START click."""
-    global pending_drill_points, jog_offset
+    """Drill using work_points from file (last_job_points + cal_offset)."""
+    global pending_drill_points
     try:
         if not pending_drill_points:
             system_state["status"] = "NO_POINTS"
@@ -609,14 +647,23 @@ async def continue_drill_workflow():
             await broadcast_state()
             return
 
-        applied_offset = dict(jog_offset)
-        work_points = [
-            (px + applied_offset["x"], py + applied_offset["y"])
-            for px, py in pending_drill_points
-        ]
-        logger.info(f"Work points with jog offset {applied_offset}: {work_points}")
+        # Load work_points from file
+        if not WORK_POINTS_PATH.exists():
+            system_state["status"] = "NO_POINTS"
+            system_state["last_error"] = "No work points file"
+            await broadcast_state()
+            return
 
-        job = await asyncio.to_thread(job_manager.create_job, work_points, False)
+        with open(WORK_POINTS_PATH, "r") as f:
+            work_data = json.load(f)
+            drill_points = work_data.get("points", [])
+
+        if not drill_points:
+            system_state["status"] = "NO_POINTS"
+            await broadcast_state()
+            return
+
+        job = await asyncio.to_thread(job_manager.create_job, drill_points, False)
         system_state["progress"] = {"current": 0, "total": len(job.points)}
         system_state["status"] = "DRILLING"
         system_state["start_state"] = "drilling"
@@ -633,8 +680,8 @@ async def continue_drill_workflow():
                 await broadcast_state()
                 return
 
-            z_clear = 5.0 + applied_offset["z"]
-            z_drill = -1.5 + applied_offset["z"]
+            z_clear = 5.0
+            z_drill = -1.5
             ok_xy = await asyncio.to_thread(
                 cnc_controller.move_to, point.x, point.y, z_clear, 1000, True, 30.0
             )
@@ -712,9 +759,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 stop_event.clear()
                 start_state = system_state.get("start_state")
 
-                if start_state == "paused_at_point" and pending_drill_points:
-                    workflow_task = asyncio.create_task(continue_drill_workflow())
-                elif start_state == "standby_ready":
+                if start_state == "standby_ready":
                     workflow_task = asyncio.create_task(run_drill_workflow())
                 elif start_state == "idle" or not start_state:
                     if cnc_controller and cnc_controller.is_connected:
@@ -872,9 +917,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 current_calibrate_state = system_state.get("calibrate_state", "idle")
 
-                # Second click behavior: return to standby and reset button state.
+                # Second click: save offset to cal_offset.json
                 if current_calibrate_state == "done":
-                    # Operator may jog manually to true drill point; store residual as runtime offset.
                     if cnc_controller and cnc_controller.is_connected and system_state.get("calibrate_target"):
                         status_now = await asyncio.to_thread(cnc_controller.query_status_once, 1.0)
                         pos = status_now.get("position", {})
@@ -884,13 +928,17 @@ async def websocket_endpoint(websocket: WebSocket):
                         pred_x = float(predicted.get("x", 0.0))
                         pred_y = float(predicted.get("y", 0.0))
 
-                        residual_x = actual_x - pred_x
-                        residual_y = actual_y - pred_y
+                        cal_x = actual_x - pred_x
+                        cal_y = actual_y - pred_y
 
-                        CALIB_OFFSET_X += residual_x
-                        CALIB_OFFSET_Y += residual_y
-                        _save_runtime_offset()
-                        system_state["calibrate_offset"] = {"x": CALIB_OFFSET_X, "y": CALIB_OFFSET_Y}
+                        # Save to cal_offset.json
+                        try:
+                            CAL_OFFSET_PATH.parent.mkdir(parents=True, exist_ok=True)
+                            with open(CAL_OFFSET_PATH, "w") as f:
+                                json.dump({"x": cal_x, "y": cal_y}, f, indent=2)
+                            logger.info(f"Saved cal_offset: X{cal_x:.3f} Y{cal_y:.3f}")
+                        except Exception as e:
+                            logger.warning(f"Failed to save cal_offset: {e}")
 
                     system_state["status"] = "STANDBY_MOVING"
                     await broadcast_state()
@@ -905,7 +953,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await broadcast_state()
                     continue
 
-                # First click behavior: run calibrate process.
+                # First click: run calibrate process.
                 system_state["calibrate_state"] = "running"
                 system_state["status"] = "CALIBRATE_RUNNING"
                 await broadcast_state()
