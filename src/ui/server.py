@@ -141,11 +141,13 @@ def _calculate_work_points():
         # Load cal_offset
         cal_offset_x = 0.0
         cal_offset_y = 0.0
+        cal_offset_z = None  # Z reference from calibrate (if exists)
         if CAL_OFFSET_PATH.exists():
             with open(CAL_OFFSET_PATH, "r") as f:
                 cal_data = json.load(f)
                 cal_offset_x = float(cal_data.get("x", 0.0))
                 cal_offset_y = float(cal_data.get("y", 0.0))
+                cal_offset_z = cal_data.get("z")  # May be None if not set
         
         # Calculate work_points
         work_points = [
@@ -158,10 +160,10 @@ def _calculate_work_points():
         with open(WORK_POINTS_PATH, "w") as f:
             json.dump({
                 "points": work_points,
-                "cal_offset": {"x": cal_offset_x, "y": cal_offset_y}
+                "cal_offset": {"x": cal_offset_x, "y": cal_offset_y, "z": cal_offset_z}
             }, f, indent=2)
         
-        logger.info(f"Calculated work_points with cal_offset: X{cal_offset_x:.3f} Y{cal_offset_y:.3f}")
+        logger.info(f"Calculated work_points with cal_offset: X{cal_offset_x:.3f} Y{cal_offset_y:.3f} Z{cal_offset_z}")
         return True
     except Exception as e:
         logger.warning(f"Failed to calculate work points: {e}")
@@ -651,21 +653,32 @@ async def run_drill_workflow():
                 await broadcast_state()
                 return
 
-            # Z: relative drill -1.5mm from current position
+            # Z: relative drill from calibrated Z or current position
             z_clear = _get_cfg("drill.z_clearance", 5.0)
-            z_drill_depth = _get_cfg("drill.z_depth", 1.5)  # Relative: drill down from current Z
+            z_drill_depth = _get_cfg("drill.z_depth", 1.5)
             
             # Move to XY first at clearance height
             ok_xy = await asyncio.to_thread(
                 cnc_controller.move_to, point.x, point.y, z_clear, 1000, True, 30.0
             )
             
-            # Get current Z and calculate relative drill depth
+            # Load Z reference from work_points file
+            ref_z = None
+            if WORK_POINTS_PATH.exists():
+                with open(WORK_POINTS_PATH, "r") as f:
+                    work_data = json.load(f)
+                    ref_z = work_data.get("cal_offset", {}).get("z")
+            
+            # Get current Z or use calibrated reference
             status_z = await asyncio.to_thread(cnc_controller.query_status_once, 1.0)
             current_z = float(status_z.get("position", {}).get("z", 0.0))
-            target_z = current_z - z_drill_depth
             
-            # Drill down relative
+            if ref_z is not None:
+                target_z = float(ref_z) - z_drill_depth  # Drill from calibrated Z reference
+            else:
+                target_z = current_z - z_drill_depth
+            
+            # Drill down
             ok_down = await asyncio.to_thread(
                 cnc_controller.move_to, None, None, target_z, 300, True, 30.0
             )
@@ -1022,19 +1035,25 @@ async def websocket_endpoint(websocket: WebSocket):
                         pos = status_now.get("position", {})
                         actual_x = float(pos.get("x", 0.0))
                         actual_y = float(pos.get("y", 0.0))
+                        actual_z = float(pos.get("z", 0.0))
                         predicted = system_state.get("calibrate_target", {})
                         pred_x = float(predicted.get("x", 0.0))
                         pred_y = float(predicted.get("y", 0.0))
 
                         cal_x = actual_x - pred_x
                         cal_y = actual_y - pred_y
+                        cal_z = actual_z  # Save current Z as reference point
 
-                        # Save to cal_offset.json
+                        # Save to cal_offset.json including Z
                         try:
                             CAL_OFFSET_PATH.parent.mkdir(parents=True, exist_ok=True)
                             with open(CAL_OFFSET_PATH, "w") as f:
-                                json.dump({"x": cal_x, "y": cal_y}, f, indent=2)
-                            logger.info(f"Saved cal_offset: X{cal_x:.3f} Y{cal_y:.3f}")
+                                json.dump({
+                                    "x": cal_x, 
+                                    "y": cal_y, 
+                                    "z": cal_z
+                                }, f, indent=2)
+                            logger.info(f"Saved cal_offset: X{cal_x:.3f} Y{cal_y:.3f} Z{cal_z:.3f}")
                         except Exception as e:
                             logger.warning(f"Failed to save cal_offset: {e}")
 
