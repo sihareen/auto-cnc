@@ -717,6 +717,7 @@
                             <button class="btn btn-blue" data-requires-ws id="btn-standby">STANDBY</button>
                             <button class="btn btn-blue" data-requires-ws id="btn-unlock">UNLOCK</button>
                             <button class="btn btn-amber" data-requires-ws id="btn-reset">RESET</button>
+                            <button class="btn btn-amber" data-requires-ws id="btn-reset-offset">RESET OFFSET</button>
                         </div>
                     </div>
                 </div>
@@ -986,6 +987,10 @@
 
         document.getElementById('btn-reset').onclick = function() {
             sendCommand({ command: 'reset' }, 'Reset command sent');
+        };
+
+        document.getElementById('btn-reset-offset').onclick = function() {
+            sendCommand({ command: 'reset_offset' }, 'Reset offset command sent');
         };
 
         document.getElementById('btn-unlock').onclick = function() {
