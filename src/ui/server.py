@@ -626,14 +626,25 @@ async def run_drill_workflow():
                 await broadcast_state()
                 return
 
+            # Z: relative drill -1.5mm from current position
             z_clear = 5.0
-            z_drill = -1.5
+            z_drill_depth = 1.5  # Relative: drill down 1.5mm from current Z
+            
+            # Move to XY first at clearance height
             ok_xy = await asyncio.to_thread(
                 cnc_controller.move_to, point.x, point.y, z_clear, 1000, True, 30.0
             )
+            
+            # Get current Z and calculate relative drill depth
+            status_z = await asyncio.to_thread(cnc_controller.query_status_once, 1.0)
+            current_z = float(status_z.get("position", {}).get("z", 0.0))
+            target_z = current_z - z_drill_depth
+            
+            # Drill down relative
             ok_down = await asyncio.to_thread(
-                cnc_controller.move_to, None, None, z_drill, 300, True, 30.0
+                cnc_controller.move_to, None, None, target_z, 300, True, 30.0
             )
+            # Move back up to clearance
             ok_up = await asyncio.to_thread(
                 cnc_controller.move_to, None, None, z_clear, 1000, True, 30.0
             )
@@ -656,7 +667,7 @@ async def run_drill_workflow():
         system_state["status"] = "STANDBY"
         await broadcast_state()
         
-        ok_standby = await asyncio.to_thread(cnc_controller.move_to, STANDBY_X, STANDBY_Y, 10.0, 1000, True, 30.0)
+        ok_standby = await asyncio.to_thread(cnc_controller.move_to, STANDBY_X, STANDBY_Y, None, 1000, True, 30.0)
         if ok_standby:
             system_state["position"] = {"x": STANDBY_X, "y": STANDBY_Y, "z": 10.0}
             system_state["status"] = "IDLE"
@@ -731,14 +742,25 @@ async def continue_drill_workflow():
                 await broadcast_state()
                 return
 
+            # Z: relative drill -1.5mm from current position
             z_clear = 5.0
-            z_drill = -1.5
+            z_drill_depth = 1.5  # Relative: drill down 1.5mm from current Z
+            
+            # Move to XY first at clearance height
             ok_xy = await asyncio.to_thread(
                 cnc_controller.move_to, point.x, point.y, z_clear, 1000, True, 30.0
             )
+            
+            # Get current Z and calculate relative drill depth
+            status_z = await asyncio.to_thread(cnc_controller.query_status_once, 1.0)
+            current_z = float(status_z.get("position", {}).get("z", 0.0))
+            target_z = current_z - z_drill_depth
+            
+            # Drill down relative
             ok_down = await asyncio.to_thread(
-                cnc_controller.move_to, None, None, z_drill, 300, True, 30.0
+                cnc_controller.move_to, None, None, target_z, 300, True, 30.0
             )
+            # Move back up to clearance
             ok_up = await asyncio.to_thread(
                 cnc_controller.move_to, None, None, z_clear, 1000, True, 30.0
             )
@@ -761,7 +783,7 @@ async def continue_drill_workflow():
         system_state["status"] = "STANDBY"
         await broadcast_state()
         
-        ok_standby = await asyncio.to_thread(cnc_controller.move_to, STANDBY_X, STANDBY_Y, 10.0, 1000, True, 30.0)
+        ok_standby = await asyncio.to_thread(cnc_controller.move_to, STANDBY_X, STANDBY_Y, None, 1000, True, 30.0)
         if ok_standby:
             system_state["position"] = {"x": STANDBY_X, "y": STANDBY_Y, "z": 10.0}
             system_state["status"] = "IDLE"
