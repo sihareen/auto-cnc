@@ -713,6 +713,7 @@
                         <div class="controls">
                             <button class="btn btn-green" data-requires-ws id="btn-start">START</button>
                             <button class="btn btn-red" data-requires-ws id="btn-stop">STOP</button>
+                            <button class="btn btn-blue" data-requires-ws id="btn-calibrate">CALIBRATE</button>
                             <button class="btn btn-blue" data-requires-ws id="btn-home">HOME</button>
                             <button class="btn btn-blue" data-requires-ws id="btn-standby">STANDBY</button>
                             <button class="btn btn-blue" data-requires-ws id="btn-unlock">UNLOCK</button>
@@ -975,6 +976,10 @@
 
         document.getElementById('btn-stop').onclick = function() {
             sendCommand({ command: 'stop' }, 'Stop command sent');
+        };
+
+        document.getElementById('btn-calibrate').onclick = function() {
+            sendCommand({ command: 'calibrate' }, 'Calibrate command sent');
         };
 
         document.getElementById('btn-home').onclick = function() {
