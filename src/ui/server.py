@@ -52,7 +52,7 @@ STANDBY_Y = -95.0
 STANDBY_Z = 0.0
 TEMP_DIR = Path("temp")
 JOB_OVERLAY_IMAGE_PATH = TEMP_DIR / "overlay.jpg"
-CALIBRATE_IMAGE_PATH = TEMP_DIR / "calibrate.jpg"
+CALIBRATE_IMAGE_PATH = TEMP_DIR / "overlay.jpg"
 LAST_JOB_POINTS_PATH = Path("config/last_job_points.json")
 WORK_POINTS_PATH = Path("config/work_points.json")
 CALIB_OFFSET_PATH = Path("config/calibration_runtime_offset.json")
@@ -613,9 +613,60 @@ async def run_drill_workflow():
         system_state["status"] = "DRILLING"
         system_state["start_state"] = "drilling"
         system_state["progress"] = {"current": 0, "total": len(drill_points)}
-        broadcast_state()
+        await broadcast_state()
 
         job = await asyncio.to_thread(job_manager.create_job, drill_points, False)
+
+        # ===== EXECUTE DRILLING =====
+        for i, point in enumerate(job.points):
+            if stop_event.is_set():
+                system_state["status"] = "STOPPED"
+                system_state["start_state"] = "idle"
+                pending_drill_points = []
+                await broadcast_state()
+                return
+
+            z_clear = 5.0
+            z_drill = -1.5
+            ok_xy = await asyncio.to_thread(
+                cnc_controller.move_to, point.x, point.y, z_clear, 1000, True, 30.0
+            )
+            ok_down = await asyncio.to_thread(
+                cnc_controller.move_to, None, None, z_drill, 300, True, 30.0
+            )
+            ok_up = await asyncio.to_thread(
+                cnc_controller.move_to, None, None, z_clear, 1000, True, 30.0
+            )
+
+            if not (ok_xy and ok_down and ok_up):
+                system_state["status"] = "ERROR"
+                system_state["last_error"] = f"Motion failed at point {i + 1}"
+                await broadcast_state()
+                return
+
+            job.mark_drilled(i)
+            system_state["progress"] = {"current": i + 1, "total": len(job.points)}
+            await broadcast_state()
+
+        await asyncio.to_thread(cnc_controller.move_to, None, None, 10.0, 1000, True, 30.0)
+        system_state["status"] = "COMPLETE"
+        await broadcast_state()
+
+        # End flow: return machine to STANDBY position
+        system_state["status"] = "STANDBY"
+        await broadcast_state()
+        
+        ok_standby = await asyncio.to_thread(cnc_controller.move_to, STANDBY_X, STANDBY_Y, 10.0, 1000, True, 30.0)
+        if ok_standby:
+            system_state["position"] = {"x": STANDBY_X, "y": STANDBY_Y, "z": 10.0}
+            system_state["status"] = "IDLE"
+            system_state["last_error"] = None
+        else:
+            system_state["status"] = "ERROR"
+            system_state["last_error"] = "Failed to move to standby after drill"
+        system_state["start_state"] = "idle"
+        pending_drill_points = []
+        await broadcast_state()
 
     except Exception as e:
         logger.exception("Workflow failed")
