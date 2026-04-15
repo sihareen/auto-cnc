@@ -801,6 +801,8 @@
                             <button class="btn btn-blue" data-requires-ws id="btn-calibrate">CALIBRATE</button>
                             <button class="btn btn-blue" data-requires-ws id="btn-home">HOME</button>
                             <button class="btn btn-blue" data-requires-ws id="btn-standby">STANDBY</button>
+                            <button class="btn btn-blue" data-requires-ws id="btn-goto-first">GOTO FIRST</button>
+                            <button class="btn btn-blue" data-requires-ws id="btn-goto-last">GOTO LAST</button>
                             <button class="btn btn-blue" data-requires-ws id="btn-unlock">UNLOCK</button>
                             <button class="btn btn-blue" data-requires-ws id="btn-preflight">CHECK</button>
                             <button class="btn btn-amber" data-requires-ws id="btn-reset">RESET</button>
@@ -850,6 +852,8 @@
             'btn-calibrate',
             'btn-home',
             'btn-standby',
+            'btn-goto-first',
+            'btn-goto-last',
             'btn-unlock',
             'btn-preflight',
             'btn-reset',
@@ -902,6 +906,8 @@
             setButtonEnabled('btn-calibrate', !isBusy && !isDrilling);
             setButtonEnabled('btn-home', !isBusy && !isDrilling);
             setButtonEnabled('btn-standby', !isBusy && !isDrilling);
+            setButtonEnabled('btn-goto-first', !isBusy && !isDrilling && !!data.connected);
+            setButtonEnabled('btn-goto-last', !isBusy && !isDrilling && !!data.connected);
             setButtonEnabled('btn-unlock', !isBusy && !isDrilling);
             setButtonEnabled('btn-reset', !isBusy || status === 'ERROR');
             setButtonEnabled('btn-camera-connect', !isBusy && !isDrilling);
@@ -1202,6 +1208,14 @@
 
         document.getElementById('btn-standby').onclick = function() {
             sendCommand({ command: 'standby' }, 'Standby command sent (X85 Y-95)');
+        };
+
+        document.getElementById('btn-goto-first').onclick = function() {
+            sendCommand({ command: 'goto_first_pad' }, 'Goto first pad command sent');
+        };
+
+        document.getElementById('btn-goto-last').onclick = function() {
+            sendCommand({ command: 'goto_last_pad' }, 'Goto last pad command sent');
         };
 
         document.getElementById('btn-reset').onclick = function() {

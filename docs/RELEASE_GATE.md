@@ -19,6 +19,7 @@ Dokumen ini dipakai sebelum rilis ke mesin produksi.
    - `logs/jobs/<job_id>.json` terbentuk
    - ada event `job_complete`/`job_failed`
    - ada event `metrics`
+   - jika `refine.enabled=true`, ada event `refine_start` dan (`refine_applied` atau `refine_skipped`)
 7. Verifikasi tidak ada error code kritikal setelah smoke test:
    - `MOTION_FAIL`
    - `SYSTEM_ERROR`
@@ -36,6 +37,12 @@ Dokumen ini dipakai sebelum rilis ke mesin produksi.
 4. Metrics API jalan:
    - `GET /api/metrics`
    - `GET /api/metrics?date_utc=<hari ini UTC>`
+5. Alignment first/last pad:
+   - `GOTO FIRST` dan `GOTO LAST` berhasil move ke target
+   - error `ALIGN_NO_POINTS` keluar benar saat `work_points` belum ada
+6. Jika refine aktif:
+   - `refine_apply_rate_pct` terbaca di `/api/metrics`
+   - skip reason muncul di `top_refine_skip_status`
 
 ## 3. Rollback Plan
 

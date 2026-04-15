@@ -98,6 +98,14 @@ RETRY_MOVE = int(_get_cfg("retry.move", 1))
 RETRY_STATUS = int(_get_cfg("retry.status", 1))
 RETRY_CAPTURE = int(_get_cfg("retry.capture", 1))
 CALIBRATE_TIMEOUT_SEC = float(_get_cfg("calibration.timeout_sec", 45.0))
+ALIGN_CLEARANCE_MM = float(_get_cfg("alignment.clearance_mm", _get_cfg("drill.z_clearance", 5.0)))
+REFINE_ENABLED = bool(_get_cfg("refine.enabled", False))
+REFINE_ROI_RADIUS_PX = float(_get_cfg("refine.roi_radius_px", 120.0))
+REFINE_MAX_DELTA_MM = float(_get_cfg("refine.max_delta_mm", 0.10))
+REFINE_TOL_X_MM = float(_get_cfg("refine.tol_x_mm", 0.03))
+REFINE_TOL_Y_MM = float(_get_cfg("refine.tol_y_mm", 0.03))
+REFINE_SEARCH_RADIUS_MM = float(_get_cfg("refine.search_radius_mm", 3.0))
+REFINE_TIMEOUT_MS = int(_get_cfg("refine.timeout_ms", 600))
 PERF_FAST_THRESHOLD = int(_get_cfg("performance.fast_point_threshold", 60))
 PERF_SLOW_THRESHOLD = int(_get_cfg("performance.slow_point_threshold", 15))
 PERF_FAST_MULT = float(_get_cfg("performance.fast_xy_multiplier", 1.2))
@@ -156,6 +164,36 @@ def _validate_startup_config() -> List[str]:
         warnings.append(f"Invalid CNC baudrate in config: {CNC_BAUDRATE}")
     if CNC_TIMEOUT <= 0:
         warnings.append(f"Invalid CNC timeout in config: {CNC_TIMEOUT}")
+    if ALIGN_CLEARANCE_MM <= 0:
+        warnings.append(f"Invalid alignment.clearance_mm in config: {ALIGN_CLEARANCE_MM}")
+    if DETECTION_RETRY_COUNT < 0:
+        warnings.append(f"Invalid detection.retry_count in config: {DETECTION_RETRY_COUNT}")
+    if DETECTION_RETRY_STEP <= 0:
+        warnings.append(f"Invalid detection.retry_threshold_step in config: {DETECTION_RETRY_STEP}")
+    if RETRY_MOVE < 0 or RETRY_STATUS < 0 or RETRY_CAPTURE < 0:
+        warnings.append(
+            "Invalid retry config (retry.move/retry.status/retry.capture must be >= 0)"
+        )
+    if CALIBRATE_TIMEOUT_SEC <= 0:
+        warnings.append(f"Invalid calibration.timeout_sec in config: {CALIBRATE_TIMEOUT_SEC}")
+    if PERF_SLOW_THRESHOLD < 0 or PERF_FAST_THRESHOLD < 0:
+        warnings.append(
+            "Invalid performance thresholds (performance.slow_point_threshold/fast_point_threshold must be >= 0)"
+        )
+    if PERF_SLOW_MULT <= 0 or PERF_FAST_MULT <= 0:
+        warnings.append(
+            "Invalid performance multipliers (performance.slow_xy_multiplier/fast_xy_multiplier must be > 0)"
+        )
+    if REFINE_ROI_RADIUS_PX <= 0:
+        warnings.append(f"Invalid refine.roi_radius_px in config: {REFINE_ROI_RADIUS_PX}")
+    if REFINE_MAX_DELTA_MM <= 0:
+        warnings.append(f"Invalid refine.max_delta_mm in config: {REFINE_MAX_DELTA_MM}")
+    if REFINE_TOL_X_MM < 0 or REFINE_TOL_Y_MM < 0:
+        warnings.append("Invalid refine tolerances (refine.tol_x_mm/refine.tol_y_mm must be >= 0)")
+    if REFINE_SEARCH_RADIUS_MM <= 0:
+        warnings.append(f"Invalid refine.search_radius_mm in config: {REFINE_SEARCH_RADIUS_MM}")
+    if REFINE_TIMEOUT_MS <= 0:
+        warnings.append(f"Invalid refine.timeout_ms in config: {REFINE_TIMEOUT_MS}")
     return warnings
 
 
@@ -234,8 +272,12 @@ def _summarize_metrics(date_utc: Optional[str] = None) -> Dict[str, Any]:
     files = sorted(JOB_LOGS_DIR.glob("*.json"))
     jobs: List[Dict[str, Any]] = []
     error_counter: Dict[str, int] = {}
+    refine_skip_counter: Dict[str, int] = {}
     total_ms_values: List[float] = []
     drill_ms_values: List[float] = []
+    refine_started_total = 0
+    refine_applied_total = 0
+    refine_skipped_total = 0
 
     for f in files:
         try:
@@ -251,6 +293,9 @@ def _summarize_metrics(date_utc: Optional[str] = None) -> Dict[str, Any]:
         events = data.get("events", [])
         points = 0
         metrics_evt = None
+        refine_started = 0
+        refine_applied = 0
+        refine_skipped = 0
 
         for evt in events:
             if evt.get("event") == "point_drilled":
@@ -260,6 +305,18 @@ def _summarize_metrics(date_utc: Optional[str] = None) -> Dict[str, Any]:
             if evt.get("event") == "error":
                 code = str(evt.get("code", "UNKNOWN"))
                 error_counter[code] = error_counter.get(code, 0) + 1
+            if evt.get("event") == "refine_start":
+                refine_started += 1
+            if evt.get("event") == "refine_applied":
+                refine_applied += 1
+            if evt.get("event") == "refine_skipped":
+                refine_skipped += 1
+                skip_status = str(evt.get("status", "unknown"))
+                refine_skip_counter[skip_status] = refine_skip_counter.get(skip_status, 0) + 1
+
+        refine_started_total += refine_started
+        refine_applied_total += refine_applied
+        refine_skipped_total += refine_skipped
 
         if metrics_evt:
             if isinstance(metrics_evt.get("total_ms"), (int, float)):
@@ -274,6 +331,11 @@ def _summarize_metrics(date_utc: Optional[str] = None) -> Dict[str, Any]:
             "ended_at": data.get("ended_at"),
             "points": points,
             "metrics": metrics_evt or {},
+            "refine": {
+                "started": refine_started,
+                "applied": refine_applied,
+                "skipped": refine_skipped,
+            },
         })
 
     jobs_sorted = sorted(jobs, key=lambda j: str(j.get("started_at", "")), reverse=True)
@@ -284,6 +346,17 @@ def _summarize_metrics(date_utc: Optional[str] = None) -> Dict[str, Any]:
 
     def _avg(vals: List[float]) -> Optional[float]:
         return round(sum(vals) / len(vals), 2) if vals else None
+
+    refine_apply_rate = (
+        (refine_applied_total / refine_started_total * 100.0)
+        if refine_started_total > 0 else 0.0
+    )
+
+    top_refine_skip_status = sorted(
+        [{"status": status, "count": count} for status, count in refine_skip_counter.items()],
+        key=lambda x: x["count"],
+        reverse=True,
+    )[:5]
 
     top_errors = sorted(
         [{"code": code, "count": count} for code, count in error_counter.items()],
@@ -299,6 +372,11 @@ def _summarize_metrics(date_utc: Optional[str] = None) -> Dict[str, Any]:
         "success_rate_pct": round(success_rate, 2),
         "avg_total_ms": _avg(total_ms_values),
         "avg_drill_ms": _avg(drill_ms_values),
+        "refine_started_total": refine_started_total,
+        "refine_applied_total": refine_applied_total,
+        "refine_skipped_total": refine_skipped_total,
+        "refine_apply_rate_pct": round(refine_apply_rate, 2),
+        "top_refine_skip_status": top_refine_skip_status,
         "top_errors": top_errors,
         "recent_jobs": jobs_sorted[:10],
     }
@@ -389,6 +467,109 @@ def _dynamic_xy_feed(total_points: int) -> int:
 
 def _record_metric(metrics: Dict[str, float], key: str, t_start: float) -> None:
     metrics[key] = round((perf_counter() - t_start) * 1000.0, 2)
+
+
+def _runtime_refine_point_sync(initial_x: float, initial_y: float) -> Dict[str, Any]:
+    """
+    Runtime per-point refine. Safe fallback by design:
+    on any issue, returns original point with non-applied status.
+    """
+    if not REFINE_ENABLED:
+        return {
+            "x": float(initial_x),
+            "y": float(initial_y),
+            "delta_x": 0.0,
+            "delta_y": 0.0,
+            "applied": False,
+            "status": "disabled",
+            "confidence": None,
+        }
+    if not (camera and detector and transformer):
+        return {
+            "x": float(initial_x),
+            "y": float(initial_y),
+            "delta_x": 0.0,
+            "delta_y": 0.0,
+            "applied": False,
+            "status": "skipped_not_ready",
+            "confidence": None,
+        }
+
+    try:
+        from src.vision.refiner import PointRefiner, RefineConfig
+    except Exception:
+        return {
+            "x": float(initial_x),
+            "y": float(initial_y),
+            "delta_x": 0.0,
+            "delta_y": 0.0,
+            "applied": False,
+            "status": "skipped_refiner_import_error",
+            "confidence": None,
+        }
+
+    frame = camera.get_frame()
+    if frame is None:
+        return {
+            "x": float(initial_x),
+            "y": float(initial_y),
+            "delta_x": 0.0,
+            "delta_y": 0.0,
+            "applied": False,
+            "status": "skipped_no_frame",
+            "confidence": None,
+        }
+
+    detections = detector.detect(frame)
+    if not detections:
+        return {
+            "x": float(initial_x),
+            "y": float(initial_y),
+            "delta_x": 0.0,
+            "delta_y": 0.0,
+            "applied": False,
+            "status": "skipped_no_detection",
+            "confidence": None,
+        }
+
+    # Optional ROI filter in pixel-space around current machine point.
+    roi_center = transformer.inverse_transform(float(initial_x), float(initial_y)) if transformer else None
+    candidates_mm: List[Tuple[float, float, float]] = []
+    for det in detections:
+        conf = float(getattr(det, "confidence", 0.0))
+        x1, y1, x2, y2 = det.bbox
+        cx = (x1 + x2) / 2.0
+        cy = (y1 + y2) / 2.0
+
+        if roi_center is not None:
+            rx, ry = roi_center
+            if ((cx - rx) ** 2 + (cy - ry) ** 2) ** 0.5 > REFINE_ROI_RADIUS_PX:
+                continue
+
+        transformed = transformer.transform_point(cx, cy)
+        if transformed is None:
+            continue
+        mx, my = transformed
+        if transformer and not transformer.is_within_bounds(mx, my):
+            mx, my = transformer.clip_to_bounds(mx, my)
+        candidates_mm.append((float(mx), float(my), conf))
+
+    cfg = RefineConfig(
+        max_delta_mm=REFINE_MAX_DELTA_MM,
+        tol_x_mm=REFINE_TOL_X_MM,
+        tol_y_mm=REFINE_TOL_Y_MM,
+        search_radius_mm=REFINE_SEARCH_RADIUS_MM,
+    )
+    result = PointRefiner.refine((float(initial_x), float(initial_y)), candidates_mm, cfg)
+    return {
+        "x": result.x,
+        "y": result.y,
+        "delta_x": result.delta_x,
+        "delta_y": result.delta_y,
+        "applied": result.applied,
+        "status": result.status,
+        "confidence": result.confidence,
+    }
 
 
 def _load_runtime_offset():
@@ -616,6 +797,61 @@ def move_to_standby_sync() -> bool:
         "y": STANDBY_Y,
         "z": float(pos.get("z", z_ref if z_ref is not None else 0.0)),
     }
+    return True
+
+
+def _load_work_points() -> List[Tuple[float, float]]:
+    if not WORK_POINTS_PATH.exists():
+        return []
+    try:
+        with open(WORK_POINTS_PATH, "r") as f:
+            data = json.load(f)
+        points = data.get("points", [])
+        if not isinstance(points, list):
+            return []
+        normalized: List[Tuple[float, float]] = []
+        for point in points:
+            if not isinstance(point, (list, tuple)) or len(point) != 2:
+                continue
+            normalized.append((float(point[0]), float(point[1])))
+        return normalized
+    except Exception:
+        return []
+
+
+def move_to_alignment_point_sync(which: str) -> bool:
+    """
+    Move to first/last work point with safe clearance Z.
+    `which` must be 'first' or 'last'.
+    """
+    if not (cnc_controller and cnc_controller.is_connected):
+        return False
+
+    points = _load_work_points()
+    if not points:
+        return False
+
+    target = points[0] if which == "first" else points[-1]
+    tx, ty, clipped = _apply_soft_limit_xy(target[0], target[1])
+    if clipped:
+        system_state["last_warning"] = f"Alignment target ({which}) clipped by workspace soft-limit"
+
+    z_ref = _get_calibrated_z_reference()
+    clearance_z = (float(z_ref) + ALIGN_CLEARANCE_MM) if z_ref is not None else ALIGN_CLEARANCE_MM
+
+    ok_up = cnc_controller.move_to(None, None, clearance_z, Z_MOVE_FEED, True, 30.0)
+    ok_xy = cnc_controller.move_to(tx, ty, None, XY_MOVE_FEED, True, 30.0)
+    if not (ok_up and ok_xy):
+        return False
+
+    status_now = cnc_controller.query_status_once(1.0)
+    pos = status_now.get("position", {})
+    system_state["position"] = {
+        "x": float(pos.get("x", tx)),
+        "y": float(pos.get("y", ty)),
+        "z": float(pos.get("z", clearance_z)),
+    }
+    system_state["alignment_target"] = {"which": which, "x": float(tx), "y": float(ty)}
     return True
 
 
@@ -1121,9 +1357,44 @@ async def run_drill_workflow():
             z_clear = _get_cfg("drill.z_clearance", 5.0)
             z_drill_depth = _get_cfg("drill.z_depth", 1.5)
             clearance_z = (float(ref_z) + z_clear) if ref_z is not None else z_clear
+
+            target_x = float(point.x)
+            target_y = float(point.y)
+            if REFINE_ENABLED:
+                _log_job_event("refine_start", point=i + 1)
+                try:
+                    refine_result = await asyncio.wait_for(
+                        asyncio.to_thread(_runtime_refine_point_sync, target_x, target_y),
+                        timeout=max(0.1, REFINE_TIMEOUT_MS / 1000.0),
+                    )
+                    target_x = float(refine_result.get("x", target_x))
+                    target_y = float(refine_result.get("y", target_y))
+                    system_state["last_refine"] = {
+                        "point": i + 1,
+                        "status": refine_result.get("status"),
+                        "delta_x": float(refine_result.get("delta_x", 0.0)),
+                        "delta_y": float(refine_result.get("delta_y", 0.0)),
+                    }
+                    _log_job_event("refine_iter", point=i + 1, iter=1, status=refine_result.get("status"))
+                    if refine_result.get("applied"):
+                        _log_job_event(
+                            "refine_applied",
+                            point=i + 1,
+                            delta_x=round(float(refine_result.get("delta_x", 0.0)), 4),
+                            delta_y=round(float(refine_result.get("delta_y", 0.0)), 4),
+                            confidence=refine_result.get("confidence"),
+                        )
+                    else:
+                        _log_job_event("refine_skipped", point=i + 1, status=refine_result.get("status"))
+                except asyncio.TimeoutError:
+                    _log_job_event("refine_skipped", point=i + 1, status="timeout")
+                    system_state["last_warning"] = f"Refine timeout at point {i + 1}, fallback to nominal"
+                except Exception as e:
+                    _log_job_event("refine_skipped", point=i + 1, status="exception", detail=str(e))
+                    system_state["last_warning"] = f"Refine error at point {i + 1}, fallback to nominal"
             
             # Move to XY first at clearance height
-            safe_x, safe_y, clipped = _apply_soft_limit_xy(point.x, point.y)
+            safe_x, safe_y, clipped = _apply_soft_limit_xy(target_x, target_y)
             if clipped:
                 system_state["last_warning"] = f"Point {i + 1} clipped by workspace soft-limit"
                 _log_job_event("soft_limit_clipped", point=i + 1)
@@ -1284,9 +1555,44 @@ async def continue_drill_workflow():
             z_clear = _get_cfg("drill.z_clearance", 5.0)
             z_drill_depth = _get_cfg("drill.z_depth", 1.5)
             clearance_z = (float(ref_z) + z_clear) if ref_z is not None else z_clear
+
+            target_x = float(point.x)
+            target_y = float(point.y)
+            if REFINE_ENABLED:
+                _log_job_event("refine_start", point=i + 1)
+                try:
+                    refine_result = await asyncio.wait_for(
+                        asyncio.to_thread(_runtime_refine_point_sync, target_x, target_y),
+                        timeout=max(0.1, REFINE_TIMEOUT_MS / 1000.0),
+                    )
+                    target_x = float(refine_result.get("x", target_x))
+                    target_y = float(refine_result.get("y", target_y))
+                    system_state["last_refine"] = {
+                        "point": i + 1,
+                        "status": refine_result.get("status"),
+                        "delta_x": float(refine_result.get("delta_x", 0.0)),
+                        "delta_y": float(refine_result.get("delta_y", 0.0)),
+                    }
+                    _log_job_event("refine_iter", point=i + 1, iter=1, status=refine_result.get("status"))
+                    if refine_result.get("applied"):
+                        _log_job_event(
+                            "refine_applied",
+                            point=i + 1,
+                            delta_x=round(float(refine_result.get("delta_x", 0.0)), 4),
+                            delta_y=round(float(refine_result.get("delta_y", 0.0)), 4),
+                            confidence=refine_result.get("confidence"),
+                        )
+                    else:
+                        _log_job_event("refine_skipped", point=i + 1, status=refine_result.get("status"))
+                except asyncio.TimeoutError:
+                    _log_job_event("refine_skipped", point=i + 1, status="timeout")
+                    system_state["last_warning"] = f"Refine timeout at point {i + 1}, fallback to nominal"
+                except Exception as e:
+                    _log_job_event("refine_skipped", point=i + 1, status="exception", detail=str(e))
+                    system_state["last_warning"] = f"Refine error at point {i + 1}, fallback to nominal"
             
             # Move to XY first at clearance height
-            safe_x, safe_y, clipped = _apply_soft_limit_xy(point.x, point.y)
+            safe_x, safe_y, clipped = _apply_soft_limit_xy(target_x, target_y)
             if clipped:
                 system_state["last_warning"] = f"Point {i + 1} clipped by workspace soft-limit"
                 _log_job_event("soft_limit_clipped", point=i + 1)
@@ -1460,6 +1766,34 @@ async def websocket_endpoint(websocket: WebSocket):
                         system_state["last_error"] = "Standby move failed or timeout"
                 else:
                     system_state["status"] = "NOT_READY"
+                await broadcast_state()
+
+            elif cmd == "goto_first_pad" or cmd == "goto_last_pad":
+                if not (cnc_controller and cnc_controller.is_connected):
+                    system_state["status"] = "NOT_READY"
+                    _set_error("NOT_READY", "CNC not connected")
+                    await broadcast_state()
+                    continue
+
+                work_points = await asyncio.to_thread(_load_work_points)
+                if not work_points:
+                    system_state["status"] = "NO_POINTS"
+                    _set_error("ALIGN_NO_POINTS", "No work points for alignment")
+                    await broadcast_state()
+                    continue
+
+                which = "first" if cmd == "goto_first_pad" else "last"
+                system_state["status"] = "ALIGN_MOVING"
+                await broadcast_state()
+                ok_move = await asyncio.to_thread(move_to_alignment_point_sync, which)
+                if ok_move:
+                    system_state["status"] = "ALIGN_READY"
+                    system_state["last_error"] = None
+                    system_state["error_code"] = None
+                    _log_job_event(f"goto_{which}_pad", points=len(work_points))
+                else:
+                    system_state["status"] = "ERROR"
+                    _set_error("ALIGN_MOVE_FAIL", f"Failed move to {which} pad")
                 await broadcast_state()
 
             elif cmd == "reset":
@@ -1836,6 +2170,34 @@ async def get_preflight():
 async def get_metrics(date_utc: Optional[str] = None):
     """Get summarized job metrics from telemetry logs."""
     return await asyncio.to_thread(_summarize_metrics, date_utc)
+
+
+@app.post("/api/alignment/first")
+async def goto_first_pad():
+    """Move machine to first work point for board alignment."""
+    if not (cnc_controller and cnc_controller.is_connected):
+        raise HTTPException(status_code=400, detail="CNC not connected")
+    points = await asyncio.to_thread(_load_work_points)
+    if not points:
+        raise HTTPException(status_code=400, detail="No work points for alignment")
+    ok = await asyncio.to_thread(move_to_alignment_point_sync, "first")
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to move to first pad")
+    return {"status": "ok", "target": system_state.get("alignment_target")}
+
+
+@app.post("/api/alignment/last")
+async def goto_last_pad():
+    """Move machine to last work point for board alignment."""
+    if not (cnc_controller and cnc_controller.is_connected):
+        raise HTTPException(status_code=400, detail="CNC not connected")
+    points = await asyncio.to_thread(_load_work_points)
+    if not points:
+        raise HTTPException(status_code=400, detail="No work points for alignment")
+    ok = await asyncio.to_thread(move_to_alignment_point_sync, "last")
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to move to last pad")
+    return {"status": "ok", "target": system_state.get("alignment_target")}
 
 @app.post("/api/control/start")
 async def start_drill():

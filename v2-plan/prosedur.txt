@@ -1,0 +1,31 @@
+kalibrasi
+1. run app cnc_gui3 : 
+	- jalankan cnc manual ke salah satu pad (pakai jog control (x+/x-/y+/y0) atau pake command gcode+tombol Send)
+	- arahkan pelan-pelan mata bor tepat di atas pcb (z-, step 1)
+	- gerakkan mata bor ke atas (z+, step 10)
+	- sampai tahap ini, posisi sekarang akan menjadi titik awal axiz Z (z0)
+	- close app
+2. run app live_pcb
+	- catat koordinat (x,y) yang terbaca
+	- sampai tahap ini, koordinat yg dicatat adalah koordinat acuan pengeboran
+	- close app
+3. update file e:/v5/padx.txt dan file pady.txt sesuai koordinat (x,y) yang terbaca pada langkah 2
+	- file e:/v5/padx.txt berisi nilai x saja dari koordinat (x,y)
+	- file e:/v5/pady.txt berisi nilai y saja dari koordinat (x,y)
+	
+preparation
+1. create file gcode
+	- run app cnc_gui3
+	- tekan tombol 'Upload PNG' kmd tekan tombol 'Find Circle X/Y' (perhatikan pola pad pcb nya)
+	- hasilnya ada 2 file, findcircle.png untuk verifikasi visual dan file cnc.gcode untuk app cnc_run
+2. letakkan pcb di tatakan cnc
+	- tekan tombol 'Upload G-code', pilih file cnc.gcode
+	- tekan tombol 'Goto first pad', kmd geser pcb sampai pas di titik biru di layar
+	- tekan tombol 'Goto last pad', kmd geser pcb sampai pas di titik biru di layar
+	- jika belum yakin pcb sudah pas, bisa ulangi langkah di atas
+	- close app
+3. tandai pinggir pcb dengan spidol di tatakan, angkat pcb, tambahkan double tape 3M, pasang pcb lg
+
+Drilling
+1. run app cnc_run, tunggu sampai selesai
+2. Jika ada yang gagal drill, dapat dilihat di file e:/v5/gagaldrill.txt (harus dibor manual)

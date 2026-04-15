@@ -61,6 +61,7 @@ Tahap 3 runtime behavior:
 - Adaptive detection threshold fallback (`detection.retry_count`, `detection.retry_threshold_step`)
 - Retry untuk capture/move/status (`retry.*`)
 - Adaptive XY feedrate berdasar jumlah titik (`performance.*`)
+- Optional per-point refine sebelum drill (`refine.*`, default off)
 
 ## Usage
 
@@ -93,6 +94,8 @@ Tahap 3 runtime behavior:
 | CALIBRATE | Set offset (X, Y, Z) |
 | HOME | CNC homing (X, Y, Z) |
 | STANDBY | Move ke posisi standby |
+| GOTO FIRST | Move ke titik pertama dari `work_points` untuk alignment PCB |
+| GOTO LAST | Move ke titik terakhir dari `work_points` untuk alignment PCB |
 | UNLOCK | Unlock GRBL |
 | CHECK | Preflight check (model, calibration, camera, CNC) |
 | RESET | Stop workflow + clear offsets + recover CNC |
@@ -112,6 +115,7 @@ Tahap 3 runtime behavior:
 
 - `GET /api/metrics` → ringkasan semua job logs
 - `GET /api/metrics?date_utc=YYYY-MM-DD` → ringkasan harian (UTC)
+- KPI refine tersedia: `refine_started_total`, `refine_applied_total`, `refine_apply_rate_pct`, `top_refine_skip_status`
 
 ## State Machine
 
