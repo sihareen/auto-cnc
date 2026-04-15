@@ -47,16 +47,41 @@ transformer = None
 pending_drill_points: List[Tuple[float, float]] = []
 jog_offset: Dict[str, float] = {"x": 0.0, "y": 0.0, "z": 0.0}
 
-STANDBY_X = 85.0
-STANDBY_Y = -95.0
+# Load config
+CONFIG_PATH = Path("config/config.json")
+_config = {}
+if CONFIG_PATH.exists():
+    try:
+        with open(CONFIG_PATH, "r") as f:
+            _config = json.load(f)
+        logger.info(f"Loaded config from {CONFIG_PATH}")
+    except Exception as e:
+        logger.warning(f"Failed to load config: {e}")
+
+def _get_cfg(path: str, default: Any = None) -> Any:
+    """Get config value by dot-separated path (e.g., 'standby.x')"""
+    keys = path.split(".")
+    val = _config
+    for k in keys:
+        if isinstance(val, dict):
+            val = val.get(k)
+        else:
+            return default
+    return val if val is not None else default
+
+# CNC settings
+STANDBY_X = _get_cfg("standby.x", 85.0)
+STANDBY_Y = _get_cfg("standby.y", -95.0)
 STANDBY_Z = 0.0
+
+# File paths
 TEMP_DIR = Path("temp")
 JOB_OVERLAY_IMAGE_PATH = TEMP_DIR / "overlay.jpg"
 CALIBRATE_IMAGE_PATH = TEMP_DIR / "overlay.jpg"
-LAST_JOB_POINTS_PATH = Path("config/last_job_points.json")
-WORK_POINTS_PATH = Path("config/work_points.json")
-CALIB_OFFSET_PATH = Path("config/calibration_runtime_offset.json")
-CAL_OFFSET_PATH = Path("config/cal_offset.json")
+LAST_JOB_POINTS_PATH = Path(_get_cfg("output.last_job_points", "config/last_job_points.json"))
+WORK_POINTS_PATH = Path(_get_cfg("output.work_points", "config/work_points.json"))
+CALIB_OFFSET_PATH = Path(_get_cfg("calibration.runtime_offset", "config/calibration_runtime_offset.json"))
+CAL_OFFSET_PATH = Path(_get_cfg("calibration.cal_offset", "config/cal_offset.json"))
 CALIB_OFFSET_X = 0.0
 CALIB_OFFSET_Y = 0.0
 DASHBOARD_HTML_PATH = Path(__file__).resolve().parent / "templates" / "dashboard.html"
@@ -627,8 +652,8 @@ async def run_drill_workflow():
                 return
 
             # Z: relative drill -1.5mm from current position
-            z_clear = 5.0
-            z_drill_depth = 1.5  # Relative: drill down 1.5mm from current Z
+            z_clear = _get_cfg("drill.z_clearance", 5.0)
+            z_drill_depth = _get_cfg("drill.z_depth", 1.5)  # Relative: drill down from current Z
             
             # Move to XY first at clearance height
             ok_xy = await asyncio.to_thread(
@@ -743,8 +768,8 @@ async def continue_drill_workflow():
                 return
 
             # Z: relative drill -1.5mm from current position
-            z_clear = 5.0
-            z_drill_depth = 1.5  # Relative: drill down 1.5mm from current Z
+            z_clear = _get_cfg("drill.z_clearance", 5.0)
+            z_drill_depth = _get_cfg("drill.z_depth", 1.5)  # Relative: drill down from current Z
             
             # Move to XY first at clearance height
             ok_xy = await asyncio.to_thread(

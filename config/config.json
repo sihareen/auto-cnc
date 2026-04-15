@@ -1,0 +1,63 @@
+{
+  "_comment": "Auto CNC Drill System Configuration - Edit values as needed for your setup",
+  
+  "cnc": {
+    "_comment": "CNC GRBL Controller settings",
+    "port": "/dev/ttyUSB0",
+    "baudrate": 115200,
+    "timeout": 30.0,
+    "homing_timeout": 120.0
+  },
+
+  "camera": {
+    "_comment": "Camera settings - index from 0-9, check with: ls /dev/video*",
+    "main_index": 4,
+    "preview_index": 0,
+    "width": 640,
+    "height": 480,
+    "fps": 30
+  },
+
+  "standby": {
+    "_comment": "Standby position after drill complete (X, Y only, Z unchanged)",
+    "x": 85.0,
+    "y": -95.0
+  },
+
+  "drill": {
+    "_comment": "Drilling parameters",
+    "z_depth": 1.5,
+    "z_clearance": 5.0,
+    "z_drill_feed": 300,
+    "xy_move_feed": 1000,
+    "z_move_feed": 1000
+  },
+
+  "detection": {
+    "_comment": "YOLOv7 detection parameters",
+    "model_path": "best.pt",
+    "confidence_threshold": 0.25,
+    "iou_threshold": 0.45,
+    "min_points": 1
+  },
+
+  "calibration": {
+    "_comment": "Calibration file paths",
+    "affine_matrix": "config/calibration_affine.json",
+    "runtime_offset": "config/calibration_runtime_offset.json",
+    "cal_offset": "config/cal_offset.json"
+  },
+
+  "output": {
+    "_comment": "Output file paths",
+    "last_job_points": "config/last_job_points.json",
+    "work_points": "config/work_points.json",
+    "overlay_image": "temp/overlay.jpg"
+  },
+
+  "server": {
+    "_comment": "Web server settings",
+    "host": "0.0.0.0",
+    "port": 8000
+  }
+}
