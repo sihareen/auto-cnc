@@ -2,6 +2,20 @@
 
 Sistem otomatisasi CNC Drill berbasis YOLOv7 untuk deteksi dan pengeboran pad hole pada PCB.
 
+## Release Status
+
+**Version:** `v1.0`  
+**Status:** `SELESAI (Production-ready for operator workflow)`  
+**Tanggal rilis:** `2026-04-15`
+
+Scope V1 selesai:
+- Dashboard operasi realtime (WebSocket) + dual camera + overlay.
+- Workflow auto drilling 2-click + calibrate 2-step.
+- Z reference dari hasil calibrate (`cal_offset.z`) untuk standby dan drilling.
+- Preflight check + soft-limit workspace + guard tombol berbasis state.
+- Telemetry per job + metrics summary API (`/api/metrics`).
+- Recovery flow operator (`STOP`, `UNLOCK`, `RESET`) + release gate checklist.
+
 ## Arsitektur
 
 ```
@@ -37,9 +51,16 @@ Edit `config/config.json` untuk configure:
   "camera": {"main_index": 4, "preview_index": 0},
   "standby": {"x": 85.0, "y": -95.0},
   "drill": {"z_depth": 1.5, "z_clearance": 5.0},
+  "retry": {"move": 1, "status": 1, "capture": 1},
+  "performance": {"fast_point_threshold": 60, "fast_xy_multiplier": 1.2},
   ...
 }
 ```
+
+Tahap 3 runtime behavior:
+- Adaptive detection threshold fallback (`detection.retry_count`, `detection.retry_threshold_step`)
+- Retry untuk capture/move/status (`retry.*`)
+- Adaptive XY feedrate berdasar jumlah titik (`performance.*`)
 
 ## Usage
 
@@ -54,9 +75,8 @@ Edit `config/config.json` untuk configure:
 
 | Click | Action |
 |-------|--------|
-| 1 | CALIBRATE → Capture, move ke padhole → PAUSE |
-| 2 | (Optional) Jog X/Y/Z ke posisi actual |
-| 2 | CALIBRATE → Simpan offset (X, Y, Z) ke `cal_offset.json` |
+| 1 | CALIBRATE → Capture, move ke target padhole |
+| 2 | Jog X/Y/Z ke posisi aktual lalu CALIBRATE lagi untuk simpan offset (X, Y, Z) ke `cal_offset.json` |
 
 **Z Calibration:**
 - Jog spindle turun ke surface PCB
@@ -74,6 +94,7 @@ Edit `config/config.json` untuk configure:
 | HOME | CNC homing (X, Y, Z) |
 | STANDBY | Move ke posisi standby |
 | UNLOCK | Unlock GRBL |
+| CHECK | Preflight check (model, calibration, camera, CNC) |
 | RESET | Stop workflow + clear offsets + recover CNC |
 
 ## Files
@@ -85,6 +106,12 @@ Edit `config/config.json` untuk configure:
 | `config/last_job_points.json` | Original drill points |
 | `config/cal_offset.json` | X, Y, Z offset dari CALIBRATE |
 | `config/work_points.json` | last_job_points + cal_offset |
+| `logs/jobs/*.json` | Telemetry per job (event + metrics) |
+
+## Metrics API
+
+- `GET /api/metrics` → ringkasan semua job logs
+- `GET /api/metrics?date_utc=YYYY-MM-DD` → ringkasan harian (UTC)
 
 ## State Machine
 

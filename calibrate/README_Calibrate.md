@@ -2,6 +2,17 @@
 
 Dokumen ini menjelaskan urutan penggunaan script kalibrasi dan bagaimana proses kalibrasi bekerja pada sistem Auto CNC.
 
+## Status Integrasi
+
+Dokumen ini berlaku untuk **Auto CNC Drill System v1.0 (selesai)**.
+
+Pada V1:
+- Hasil kalibrasi disimpan ke `config/calibration_affine.json`.
+- Offset runtime hasil tombol `CALIBRATE` disimpan ke `config/cal_offset.json` (`x`, `y`, `z`).
+- Nilai `cal_offset.z` dipakai sebagai referensi:
+  - posisi standby Z
+  - target drilling Z (`ref_z - z_depth`)
+
 ## Tujuan Kalibrasi
 Kalibrasi dipakai untuk mengubah titik deteksi kamera (pixel) menjadi koordinat mesin CNC (mm) agar posisi drilling akurat.
 
