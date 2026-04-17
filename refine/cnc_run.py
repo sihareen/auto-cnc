@@ -13,25 +13,25 @@ idku=uuid.getnode()
 #contents = urllib.request.urlopen("http://demo.indomaker.com/raftech/ceklic.php?user="+str(uuid.getnode())).read()
 contents=b'ok'
 #print (contents)
-f = open("cam.txt", "r")
-camno=f.read()
+
+def _read_txt(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read().strip()
+
+
+camno=_read_txt("refine/cam.txt")
 
 # pad center (282, 257) 212
-f = open("padx.txt", "r")
-angkax=f.read()
+angkax=_read_txt("refine/padx.txt")
 #print (angkax)
-f = open("pady.txt", "r")
-angkay=f.read()
-f = open("zdepth.txt", "r")
-zdepth=f.read()
-f = open("zfeed.txt", "r")
-zfeed=f.read()
-f = open("com.txt", "r")
-kom=f.read()
+angkay=_read_txt("refine/pady.txt")
+zdepth=_read_txt("refine/zdepth.txt")
+zfeed=_read_txt("refine/zfeed.txt")
+kom=_read_txt("refine/com.txt")
 x=int(angkax)
 y=int(angkay)
 r=120
-MODEL_PATH = "best.pt"  # 640x480 model
+MODEL_PATH = "refine/best.pt"  # 640x480 model
 IMG_SIZE = (640, 480)  # 640x480
 #centerx=0
 #centery=0
@@ -242,7 +242,7 @@ def carititikpas():
 if contents.decode('utf-8')=="ok" :
     ser = serial.Serial(kom,baudrate=115200)  # open serial port
     #carititikpas()
-    file1 = open('cnc.gcode', 'r')
+    file1 = open('config/mapping_output.gcode', 'r')
     Lines = file1.readlines()
     #print (Lines)
     #print (Lines[0]) 
@@ -313,5 +313,5 @@ if contents.decode('utf-8')=="ok" :
         time.sleep(1)
         
     ser.close()
-    with open("gagaldrill.txt", "w") as text_file:
+    with open("refine/gagaldrill.txt", "w") as text_file:
         text_file.write(s1)

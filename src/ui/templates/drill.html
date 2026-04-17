@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Auto CNC Drill Mode</title>
+  <style>
+    :root {
+      --bg: #eef2f7;
+      --card: #ffffff;
+      --line: #d4dce8;
+      --text: #162030;
+      --muted: #5f6f86;
+      --ok: #148a4f;
+      --warn: #a56700;
+      --bad: #c43737;
+      --blue: #1b67d6;
+      --mono: "JetBrains Mono", Consolas, monospace;
+      --sans: "Inter", "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: var(--sans); background: var(--bg); color: var(--text); }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 16px; display: grid; gap: 12px; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .links { display: flex; gap: 8px; }
+    .link {
+      text-decoration: none; color: var(--text); border: 1px solid var(--line); background: var(--card);
+      border-radius: 8px; padding: 8px 10px; font-size: 12px; font-family: var(--mono);
+    }
+    .grid { display: grid; gap: 12px; grid-template-columns: 340px 1fr; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    .title { font-size: 12px; letter-spacing: .8px; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+    .status { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font: 700 12px var(--mono); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #999; }
+    .ok { background: var(--ok); } .bad { background: var(--bad); } .warn { background: var(--warn); }
+    .kv { display: grid; grid-template-columns: 1fr auto; gap: 6px; font: 600 12px var(--mono); margin-top: 10px; }
+    .k { color: var(--muted); }
+    .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+    button {
+      border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; font: 700 12px var(--mono); cursor: pointer;
+      background: #fff;
+    }
+    .btn-start { background: #e9f6ef; border-color: #b9e4ca; color: #0e6f3f; }
+    .btn-stop { background: #faecec; border-color: #efc0c0; color: #b52828; }
+    .full { grid-column: 1 / -1; }
+    .stream { width: 100%; border-radius: 8px; border: 1px solid var(--line); background: #000; aspect-ratio: 4/3; object-fit: cover; }
+    .msg { margin-top: 8px; font: 600 12px var(--mono); }
+    .err { color: var(--bad); } .warn-txt { color: var(--warn); }
+    @media (max-width: 1024px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h2 style="margin:0">Drill Mode</h2>
+        <div style="font:12px var(--mono); color:#5f6f86">Source titik: <code>config/mapping_output.gcode</code></div>
+      </div>
+      <div class="links">
+        <a class="link" href="/">Back</a>
+        <a class="link" href="/">Dashboard</a>
+        <a class="link" href="/mapping">Mapping</a>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="title">Status</div>
+        <div class="status" id="statusBadge"><span class="dot" id="statusDot"></span><span id="statusText">-</span></div>
+
+        <div class="kv">
+          <div class="k">Progress</div><div id="progress">0 / 0</div>
+          <div class="k">X (mm)</div><div id="posX">0.000</div>
+          <div class="k">Y (mm)</div><div id="posY">0.000</div>
+          <div class="k">Z (mm)</div><div id="posZ">0.000</div>
+        </div>
+
+        <div class="controls">
+          <button class="btn-start" id="btnStart">Start Drill</button>
+          <button class="btn-stop" id="btnStop">Stop</button>
+          <button id="btnRefresh" class="full">Refresh Status</button>
+        </div>
+
+        <div style="margin-top:10px">
+          <div class="title" style="margin-bottom:6px">Preview Camera Source</div>
+          <div class="controls">
+            <select id="previewSourceSelect" style="grid-column:1/-1; border:1px solid var(--line); border-radius:8px; padding:8px; font:600 12px var(--mono)"></select>
+            <button id="btnConnectPreview" class="full">Connect Preview Camera</button>
+          </div>
+        </div>
+
+        <div class="msg warn-txt" id="warnText"></div>
+        <div class="msg err" id="errText"></div>
+      </div>
+
+      <div class="card">
+        <div class="title">Refine Preview</div>
+        <img class="stream" src="/video/preview_stream" alt="Preview stream" />
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const statusText = document.getElementById('statusText');
+    const statusDot = document.getElementById('statusDot');
+    const progress = document.getElementById('progress');
+    const posX = document.getElementById('posX');
+    const posY = document.getElementById('posY');
+    const posZ = document.getElementById('posZ');
+    const errText = document.getElementById('errText');
+    const warnText = document.getElementById('warnText');
+    const previewSourceSelect = document.getElementById('previewSourceSelect');
+
+    function setStatus(status) {
+      statusText.textContent = status || '-';
+      const s = (status || '').toUpperCase();
+      statusDot.className = 'dot';
+      if (s.includes('ERROR') || s.includes('ALARM')) statusDot.classList.add('bad');
+      else if (s.includes('DRILL') || s.includes('RUN') || s.includes('SETTL')) statusDot.classList.add('ok');
+      else if (s.includes('STOP') || s.includes('WARN')) statusDot.classList.add('warn');
+    }
+
+    async function fetchStatus() {
+      try {
+        const res = await fetch('/api/status', { cache: 'no-store' });
+        const st = await res.json();
+        setStatus(st.status);
+        const cur = st.progress?.current ?? 0;
+        const tot = st.progress?.total ?? 0;
+        progress.textContent = `${cur} / ${tot}`;
+        posX.textContent = Number(st.position?.x ?? 0).toFixed(3);
+        posY.textContent = Number(st.position?.y ?? 0).toFixed(3);
+        posZ.textContent = Number(st.position?.z ?? 0).toFixed(3);
+        errText.textContent = st.last_error ? `ERROR: ${st.last_error}` : '';
+        warnText.textContent = st.last_warning ? `WARNING: ${st.last_warning}` : '';
+      } catch (e) {
+        errText.textContent = `ERROR: ${e}`;
+      }
+    }
+
+    async function loadCameraSources() {
+      try {
+        const res = await fetch('/api/camera/sources', { cache: 'no-store' });
+        const data = await res.json();
+        const sources = Array.isArray(data.sources) ? data.sources : [];
+        const currentPreview = data.preview_source;
+
+        previewSourceSelect.innerHTML = '';
+        for (const src of sources) {
+          const opt = document.createElement('option');
+          opt.value = src.value;
+          opt.textContent = src.label || src.value;
+          previewSourceSelect.appendChild(opt);
+        }
+
+        if (currentPreview != null) {
+          const asString = String(currentPreview);
+          const idx = Array.from(previewSourceSelect.options).findIndex(o => o.value === asString);
+          if (idx >= 0) previewSourceSelect.selectedIndex = idx;
+        }
+      } catch (e) {
+        errText.textContent = `ERROR: gagal load camera source (${e})`;
+      }
+    }
+
+    async function post(path) {
+      const res = await fetch(path, { method: 'POST' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
+      return res.json().catch(() => ({}));
+    }
+
+    document.getElementById('btnStart').onclick = async () => {
+      try { await post('/api/drill/start'); } catch (e) { errText.textContent = `ERROR: ${e.message}`; }
+      fetchStatus();
+    };
+    document.getElementById('btnStop').onclick = async () => {
+      try { await post('/api/drill/stop'); } catch (e) { errText.textContent = `ERROR: ${e.message}`; }
+      fetchStatus();
+    };
+    document.getElementById('btnRefresh').onclick = fetchStatus;
+    document.getElementById('btnConnectPreview').onclick = async () => {
+      try {
+        const selected = previewSourceSelect.value;
+        const res = await fetch('/api/drill/preview/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source: selected })
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.detail || `HTTP ${res.status}`);
+        }
+        await fetchStatus();
+      } catch (e) {
+        errText.textContent = `ERROR: ${e.message}`;
+      }
+    };
+
+    fetchStatus();
+    loadCameraSources();
+    setInterval(fetchStatus, 500);
+  </script>
+</body>
+</html>

@@ -10,9 +10,9 @@
   },
 
   "camera": {
-    "_comment": "Camera settings - index from 0-9, check with: ls /dev/video*",
-    "main_index": 2,
-    "preview_index": 0,
+    "_comment": "Camera settings - use stable /dev/v4l/by-id or /dev/v4l/by-path source",
+    "main_source": "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_WHSN0001-video-index0",
+    "preview_source": "/dev/v4l/by-id/usb-05e3_USB2.0_Digital_Camera_USB2.0_Digital_Camera-video-index0",
     "width": 640,
     "height": 480,
     "fps": 30
@@ -21,7 +21,8 @@
   "standby": {
     "_comment": "Standby position after drill complete (X, Y only, Z unchanged)",
     "x": 86.0,
-    "y": -100.0
+    "y": -100.0,
+    "z": 0.0
   },
 
   "drill": {
@@ -30,7 +31,15 @@
     "z_clearance": 5,
     "z_drill_feed": 300,
     "xy_move_feed": 1000,
-    "z_move_feed": 1000
+    "z_move_feed": 1000,
+    "refine_dwell_ms": 800,
+    "refine_max_steps": 8,
+    "refine_jog_feed": 300,
+    "refine_jog_step_mm": 0.5,
+    "refine_pixel_tolerance": 1.0,
+    "refine_loop_sleep_ms": 1000,
+    "refine_detect_window_ms": 3000,
+    "refine_accept_confidence": 0.50
   },
 
   "detection": {
@@ -52,13 +61,25 @@
 
   "refine": {
     "_comment": "Per-point optional refinement before drill",
-    "enabled": false,
+    "enabled": true,
+    "profile": "reference",
+    "profile_override": true,
     "roi_radius_px": 120.0,
+    "roi_center_x_px": 202.0,
+    "roi_center_y_px": 129.0,
+    "preprocess_alpha": 1.5,
+    "preprocess_beta": 20.0,
+    "preprocess_normalize": true,
+    "detect_confidence": 0.50,
+    "detect_iou": 0.50,
+    "max_no_det_retry": 10,
+    "retry_sleep_ms": 100,
     "max_delta_mm": 0.10,
     "tol_x_mm": 0.03,
     "tol_y_mm": 0.03,
     "search_radius_mm": 3.0,
-    "timeout_ms": 600
+    "timeout_ms": 600,
+    "preview_overlay_interval_ms": 250
   },
 
   "workspace": {
@@ -95,6 +116,7 @@
     "_comment": "Output file paths",
     "last_job_points": "config/last_job_points.json",
     "work_points": "config/work_points.json",
+    "mapping_gcode": "config/mapping_output.gcode",
     "overlay_image": "temp/overlay.jpg"
   },
 

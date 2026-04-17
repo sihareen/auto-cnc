@@ -5,7 +5,7 @@ import cv2
 import threading
 import time
 import logging
-from typing import Optional, Tuple, List, Callable
+from typing import Optional, Tuple, List, Callable, Any
 from enum import Enum
 import numpy as np
 
@@ -35,7 +35,8 @@ class CameraCapture:
     - Real-time frame rate control
     """
     
-    def __init__(self, camera_index: int = None, 
+    def __init__(self, camera_source: Any = None,
+                 camera_index: int = None,
                  width: int = 1280, 
                  height: int = 720, 
                  fps: int = 30):
@@ -51,15 +52,71 @@ class CameraCapture:
         self.read_thread: Optional[threading.Thread] = None
         self.callbacks: List[Callable] = []
         self.roi: Optional[Tuple[int, int, int, int]] = None
+        self.max_consecutive_read_failures = 12
+        self.reopen_backoff_sec = 0.3
+        self._last_reopen_ts = 0.0
         
-        # Auto-detect USB camera if not specified
-        if camera_index is None:
-            camera_index = self._find_usb_camera()
-        
-        self.camera_index = camera_index
+        # Backward compatibility: allow old camera_index parameter.
+        if camera_source is None and camera_index is not None:
+            camera_source = camera_index
+
+        # Auto-detect USB camera index if source not specified.
+        if camera_source is None:
+            camera_source = self._find_usb_camera()
+
+        self.camera_source = camera_source
         self.width = width
         self.height = height
         self.fps = fps
+
+    def _open_capture_once(self) -> bool:
+        """Open and configure cv2.VideoCapture once."""
+        cap = cv2.VideoCapture(self.camera_source)
+        if not cap.isOpened():
+            return False
+
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        cap.set(cv2.CAP_PROP_FPS, self.fps)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if actual_width != self.width or actual_height != self.height:
+            logger.warning(
+                f"Camera resolution mismatch: requested {self.width}x{self.height}, "
+                f"got {actual_width}x{actual_height}"
+            )
+
+        # Swap handle only after successful open+configure.
+        old_cap = self.cap
+        self.cap = cap
+        if old_cap is not None:
+            try:
+                old_cap.release()
+            except Exception:
+                pass
+        return True
+
+    def _reopen_capture(self) -> bool:
+        """Best-effort camera reopen for stream auto-recovery."""
+        now = time.time()
+        if (now - self._last_reopen_ts) < self.reopen_backoff_sec:
+            return False
+        self._last_reopen_ts = now
+
+        try:
+            if self.cap and self.cap.isOpened():
+                self.cap.release()
+        except Exception:
+            pass
+
+        ok = self._open_capture_once()
+        if ok:
+            logger.info(f"Camera source={self.camera_source} stream recovered")
+        else:
+            logger.warning(f"Camera source={self.camera_source} reopen failed")
+        return ok
     
     def _find_usb_camera(self) -> int:
         """Find USB camera 0ac8:3370 automatically"""
@@ -93,39 +150,22 @@ class CameraCapture:
             bool: True if connection successful
         """
         self.state = CameraState.CONNECTING
-        logger.info(f"Connecting to camera {self.camera_index}...")
+        logger.info(f"Connecting to camera source={self.camera_source}...")
         
         for attempt in range(max_attempts):
             try:
-                self.cap = cv2.VideoCapture(self.camera_index)
-                
-                if not self.cap.isOpened():
-                    raise CameraError(f"Camera {self.camera_index} not opened")
-                
-                # Set camera properties
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-                self.cap.set(cv2.CAP_PROP_FPS, self.fps)
-                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer
-                
-                # Verify settings
-                actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                
-                if actual_width != self.width or actual_height != self.height:
-                    logger.warning(f"Camera resolution mismatch: "
-                                 f"requested {self.width}x{self.height}, "
-                                 f"got {actual_width}x{actual_height}")
-                
+                if not self._open_capture_once():
+                    raise CameraError(f"Camera source {self.camera_source} not opened")
+
                 self.state = CameraState.CONNECTED
-                logger.info(f"Camera {self.camera_index} connected successfully")
+                logger.info(f"Camera source={self.camera_source} connected successfully")
                 return True
                 
             except Exception as e:
                 logger.error(f"Connection attempt {attempt + 1} failed: {e}")
                 if attempt == max_attempts - 1:
                     self.state = CameraState.ERROR
-                    logger.error(f"Failed to connect to camera {self.camera_index}")
+                    logger.error(f"Failed to connect to camera source={self.camera_source}")
                     return False
                 
                 time.sleep(1)  # Wait before retry
@@ -139,7 +179,7 @@ class CameraCapture:
         
         self.cap = None
         self.state = CameraState.DISCONNECTED
-        logger.info(f"Camera {self.camera_index} disconnected")
+        logger.info(f"Camera source={self.camera_source} disconnected")
     
     def start_streaming(self):
         """Start continuous frame streaming"""
@@ -168,15 +208,33 @@ class CameraCapture:
         """Internal frame streaming loop"""
         frame_count = 0
         start_time = time.time()
+        consecutive_read_failures = 0
         
-        while self.streaming and self.cap and self.cap.isOpened():
+        while self.streaming:
             try:
+                if self.cap is None or not self.cap.isOpened():
+                    if not self._reopen_capture():
+                        time.sleep(0.1)
+                        continue
+                    consecutive_read_failures = 0
+
                 ret, frame = self.cap.read()
                 
                 if not ret:
-                    logger.error("Failed to read frame from camera")
+                    consecutive_read_failures += 1
+                    if consecutive_read_failures in (1, 5, 10) or (
+                        consecutive_read_failures % self.max_consecutive_read_failures == 0
+                    ):
+                        logger.warning(
+                            f"Failed to read frame from camera "
+                            f"(consecutive={consecutive_read_failures})"
+                        )
+                    if consecutive_read_failures >= self.max_consecutive_read_failures:
+                        self._reopen_capture()
+                        consecutive_read_failures = 0
                     time.sleep(0.1)
                     continue
+                consecutive_read_failures = 0
                 
                 # Apply ROI if set
                 if self.roi:
@@ -210,6 +268,7 @@ class CameraCapture:
                 
             except Exception as e:
                 logger.error(f"Streaming error: {e}")
+                self._reopen_capture()
                 time.sleep(0.1)
     
     def get_frame(self) -> Optional[np.ndarray]:
@@ -266,7 +325,7 @@ class CameraCapture:
             return {}
             
         info = {
-            "camera_index": self.camera_index,
+            "camera_source": self.camera_source,
             "state": self.state.value,
             "streaming": self.streaming,
             "width": int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)),

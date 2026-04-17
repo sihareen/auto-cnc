@@ -1,95 +1,48 @@
 # README Calibrate
 
-Dokumen ini menjelaskan urutan penggunaan script kalibrasi dan bagaimana proses kalibrasi bekerja pada sistem Auto CNC.
+Dokumen ini menjelaskan alur kalibrasi pada Auto CNC Drill System.
 
 ## Status Integrasi
 
-Dokumen ini berlaku untuk **Auto CNC Drill System v1.0 (selesai)**.
+Berlaku untuk runtime aktif:
+- offset kalibrasi disimpan ke `config/cal_offset.json` (`x`,`y`,`z`)
+- matrix affine disimpan di `config/calibration_affine.json`
 
-Pada V1:
-- Hasil kalibrasi disimpan ke `config/calibration_affine.json`.
-- Offset runtime hasil tombol `CALIBRATE` disimpan ke `config/cal_offset.json` (`x`, `y`, `z`).
-- Nilai `cal_offset.z` dipakai sebagai referensi:
-  - posisi standby Z
-  - target drilling Z (`ref_z - z_depth`)
+## Tujuan
 
-## Tujuan Kalibrasi
-Kalibrasi dipakai untuk mengubah titik deteksi kamera (pixel) menjadi koordinat mesin CNC (mm) agar posisi drilling akurat.
+Kalibrasi mengubah hasil deteksi kamera (pixel) menjadi koordinat mesin (mm) dan mengunci referensi offset operator.
 
-Output utama kalibrasi disimpan ke:
-- `config/calibration_affine.json`
+## Alur Calibrate di Dashboard (2-Step)
 
-File ini dipakai langsung oleh product code saat runtime.
+1. Klik `CALIBRATE` (step 1)
+- Sistem capture + detect target
+- Sistem move ke target
 
-## Urutan Script Kalibrasi
-Script sudah diberi nomor agar urut pemakaiannya jelas.
+2. Jog manual
+- Operator jog X/Y/Z hingga tepat di titik aktual
 
+3. Klik `CALIBRATE` lagi (step 2)
+- Sistem simpan offset ke `config/cal_offset.json`
+- Sistem kembali `HOME` lalu `IDLE`
+
+## Script Kalibrasi Offline
+
+Urutan script tetap tersedia:
 1. `calibrate/01_add_markers.py`
-2. `calibrate/02_calibrate_from_markers.py`
-3. `calibrate/03_calibrate_cli.py` (opsional/manual)
-4. `calibrate/04_calibrate.py` (GUI alternatif + verifikasi)
+2. `calibrate/01_pick_roi_center.py` (opsional, bantu pilih pixel ROI center)
+3. `calibrate/02_calibrate_from_markers.py`
+4. `calibrate/03_calibrate_cli.py` (opsional)
+5. `calibrate/04_calibrate.py` (verifikasi)
 
-## Alur Rekomendasi (Cepat)
-### 1) Ambil titik marker dari gambar
+Contoh:
+
 ```bash
 python calibrate/01_add_markers.py capture.jpg
-```
-- Klik titik referensi pada gambar.
-- Simpan hasil marker (pixel coordinates).
-
-### 2) Masukkan koordinat mesin untuk tiap marker, lalu hitung
-```bash
+python calibrate/01_pick_roi_center.py capture.jpg --grid 15
 python calibrate/02_calibrate_from_markers.py --markers calibrate/calibrate_markers.txt
-```
-- Script meminta input `X(mm)` dan `Y(mm)` untuk setiap titik pixel.
-- Script menghitung matriks kalibrasi otomatis.
-- Hasil langsung disimpan ke `config/calibration_affine.json`.
-
-### 3) Verifikasi hasil (opsional, disarankan)
-```bash
 python calibrate/04_calibrate.py --verify
 ```
-- Cek error reprojection dan hasil transform contoh titik.
 
-## Alur Manual (Alternatif)
-Jika ingin input titik satu per satu secara manual:
+## Catatan
 
-```bash
-python calibrate/03_calibrate_cli.py --add <px_x> <px_y> <mm_x> <mm_y>
-python calibrate/03_calibrate_cli.py --calculate
-python calibrate/03_calibrate_cli.py --save
-python calibrate/03_calibrate_cli.py --verify
-```
-
-## Logika Dinamis Jumlah Titik (1-20)
-Sistem kalibrasi mendukung jumlah titik dinamis dengan mode fitting berikut:
-
-- 1 titik: `translation`
-- 2 titik: `similarity` (scale + rotation + translation)
-- 3 atau lebih titik: `affine` (least-squares)
-
-Batas jumlah titik:
-- Minimal: 1
-- Maksimal: 20
-
-Catatan praktik terbaik:
-- Disarankan gunakan 9-20 titik.
-- Sebarkan titik di seluruh area kerja (pojok, tepi, tengah).
-- Hindari titik menumpuk di satu area saja.
-
-## Struktur Data Kalibrasi
-File `config/calibration_affine.json` menyimpan:
-- `matrix` (2x3 transform)
-- `fit_mode` (`translation`, `similarity`, `affine`)
-- `src_points_px`
-- `dst_points_mm`
-- `reprojection_error_mm`
-- `per_point_error_mm`
-
-## Integrasi ke Product Code
-Setelah file kalibrasi tersimpan, runtime product akan membaca nilai terbaru dari `config/calibration_affine.json`.
-
-Agar update dipakai penuh, restart aplikasi setelah kalibrasi.
-
-## Catatan Tambahan
-Selain matriks utama, sistem bisa punya offset runtime di `config/calibration_runtime_offset.json` untuk koreksi operator saat proses produksi.
+Setelah update matrix/offset, restart aplikasi agar runtime memakai nilai terbaru secara konsisten.

@@ -16,10 +16,10 @@ idku=uuid.getnode()
 #contents = urllib.request.urlopen("http://demo.indomaker.com/raftech/ceklic.php?user="+str(uuid.getnode())).read()
 #print (contents)
 contents=b'ok'
-f = open("padx.txt", "r")
+f = open("refine/padx.txt", "r")
 angkax=f.read()
 #print (angkax)
-f = open("pady.txt", "r")
+f = open("refine/pady.txt", "r")
 angkay=f.read()
 
 class CNCInterface:
@@ -39,7 +39,7 @@ class CNCInterface:
         self.update_status()
         
         # Start camera thread
-        self.cap = cv2.VideoCapture(0)  # Default camera
+        self.cap = cv2.VideoCapture(2)  # Default camera
         if not self.cap.isOpened():
             self.update_status_text("Error: Could not open camera")
             self.camera_running = False
@@ -117,7 +117,7 @@ class CNCInterface:
         self.stop_btn = tk.Button(self.file_frame, text="Stop", command=self.stop_gcode, state=tk.DISABLED)
         self.stop_btn.pack(side=tk.LEFT, padx=5)
         tk.Button(self.file_frame, text="Goto first pad", command=self.exec_first_line).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.file_frame, text="Goto first pad", command=self.exec_last_line).pack(side=tk.LEFT, padx=5)
+        tk.Button(self.file_frame, text="Goto last pad", command=self.exec_last_line).pack(side=tk.LEFT, padx=5)
         tk.Button(self.file_frame, text="Upload PNG", command=self.upload_png).pack(side=tk.LEFT, padx=5)
         tk.Button(self.file_frame, text="Find Circle X", command=self.find_circles).pack(side=tk.LEFT, padx=5)
         tk.Button(self.file_frame, text="Find Circle Y", command=self.find_circles_y).pack(side=tk.LEFT, padx=5)

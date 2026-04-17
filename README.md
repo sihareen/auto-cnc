@@ -1,136 +1,128 @@
 # Auto CNC Drill System
 
-Sistem otomatisasi CNC Drill berbasis YOLOv7 untuk deteksi dan pengeboran pad hole pada PCB.
+Sistem otomatisasi CNC Drill berbasis YOLOv7 untuk:
+- deteksi pad-hole PCB,
+- mapping koordinat pixel -> mesin (mm),
+- export hasil mapping ke G-code,
+- drilling seluruh pad hasil mapping.
 
 ## Release Status
 
 **Version:** `v1.0`  
-**Status:** `SELESAI (Production-ready for operator workflow)`  
-**Tanggal rilis:** `2026-04-15`
+**Status:** `SELESAI (production-ready untuk workflow operator)`
 
-Scope V1 selesai:
-- Dashboard operasi realtime (WebSocket) + dual camera + overlay.
-- Workflow auto drilling 2-click + calibrate 2-step.
-- Z reference dari hasil calibrate (`cal_offset.z`) untuk standby dan drilling.
-- Preflight check + soft-limit workspace + guard tombol berbasis state.
-- Telemetry per job + metrics summary API (`/api/metrics`).
-- Recovery flow operator (`STOP`, `UNLOCK`, `RESET`) + release gate checklist.
-
-## Arsitektur
-
-```
-Web UI → API Gateway → Vision Service / CNC Controller → Hardware
-```
-
-### Komponen
-
-| Komponen | Fungsi |
-|----------|--------|
-| `src/vision/` | Camera capture & YOLOv7 inference |
-| `src/cnc/` | GRBL controller & job execution |
-| `src/ui/` | Web dashboard |
-| `src/core/` | State machine & orchestration |
-
-## Installation
+## Entry Point
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+python main.py
+# atau
+uvicorn src.ui.server:app --host 127.0.0.1 --port 8000
 ```
 
-Requirements: Python 3.14+, OpenCV, PyTorch, PySerial, FastAPI
+## Halaman Web
+
+- `/`: Main menu.
+- `/mapping`: Mapping + calibrate workspace/offset.
+- `/drill`: Drill dari `config/mapping_output.gcode`.
+
+## Workflow Utama
+
+### 1) Mapping -> Export G-code
+
+Di halaman `/mapping`:
+1. Klik `CHECK`.
+2. Klik `MAPPING`.
+3. Sistem jalan: standby -> capture -> detect -> transform -> simpan output.
+4. Output utama:
+- `config/last_job_points.json`
+- `config/work_points.json`
+- `config/mapping_output.gcode`
+
+### 2) Drilling Hasil Mapping
+
+#### Opsi A (direkomendasikan): runtime utama `/drill`
+
+1. Buka `/drill`.
+2. Pastikan preview camera terhubung.
+3. Klik `Start Drill`.
+
+#### Opsi B (legacy): script `refine/cnc_run.py`
+
+- Tetap tersedia untuk workflow lama berbasis `refine/cnc.gcode`.
+
+### 3) Calibrate Offset (UI 2-step)
+
+Di halaman `/mapping`:
+1. Klik `CALIBRATE` (step 1): detect target + move ke target.
+2. Jog manual X/Y/Z sampai tepat.
+3. Klik `CALIBRATE` lagi (step 2): simpan offset ke `config/cal_offset.json` (`x`,`y`,`z`).
+4. Sistem kembali `HOME` -> `IDLE`.
+
+## Kalibrasi Workspace (Offline)
+
+Alur dasar:
+1. Ambil foto board, simpan ke `calibrate/capture.jpeg`.
+2. Jalankan marker picker:
+
+```bash
+python calibrate/01_add_markers.py calibrate/capture.jpeg
+```
+
+3. Jalankan hitung kalibrasi:
+
+```bash
+python calibrate/02_calibrate_from_markers.py --markers calibrate/calibrate_markers.txt
+```
+
+4. Masukkan koordinat workspace (X,Y) yang dicatat manual.
+5. Hasil matrix tersimpan di `config/calibration_affine.json`.
+
+## Tombol Inti
+
+### Mapping (`/mapping`)
+
+- `MAPPING`, `CALIBRATE`, `STOP`, `HOME`, `Z-HOME`, `STANDBY`, `UNLOCK`, `CHECK`, `RESET`
+- Jog XY/Z
+- Connect kamera
+
+### Drill (`/drill`)
+
+- `Start Drill`, `Stop`
+- Connect preview camera
 
 ## Konfigurasi
 
-Edit `config/config.json` untuk configure:
+File utama: `config/config.json`
 
-```json
-{
-  "cnc": {"port": "/dev/ttyUSB0", "baudrate": 115200},
-  "camera": {"main_index": 4, "preview_index": 0},
-  "standby": {"x": 85.0, "y": -95.0},
-  "drill": {"z_depth": 1.5, "z_clearance": 5.0},
-  "retry": {"move": 1, "status": 1, "capture": 1},
-  "performance": {"fast_point_threshold": 60, "fast_xy_multiplier": 1.2},
-  ...
-}
-```
+Bagian penting:
+- `cnc.*`
+- `camera.main_source`, `camera.preview_source`
+- `standby.*`
+- `drill.*`
+- `detection.*`
+- `refine.*`
+- `workspace.*`
+- `output.*`
 
-Tahap 3 runtime behavior:
-- Adaptive detection threshold fallback (`detection.retry_count`, `detection.retry_threshold_step`)
-- Retry untuk capture/move/status (`retry.*`)
-- Adaptive XY feedrate berdasar jumlah titik (`performance.*`)
-- Optional per-point refine sebelum drill (`refine.*`, default off)
+## Output Runtime
 
-## Usage
-
-### Mode Auto (2-Click Drill)
-
-| Click | Action |
-|-------|--------|
-| 1 | START → Move ke standby (X85, Y-95) |
-| 2 | START → Capture → Drill semua hole → Return standby |
-
-### Mode Calibrate (Set Offset)
-
-| Click | Action |
-|-------|--------|
-| 1 | CALIBRATE → Capture, move ke target padhole |
-| 2 | Jog X/Y/Z ke posisi aktual lalu CALIBRATE lagi untuk simpan offset (X, Y, Z) ke `cal_offset.json` |
-
-**Z Calibration:**
-- Jog spindle turun ke surface PCB
-- Jog X/Y ke target hole
-- CALIBRATE → Simpan posisi sebagai reference
-- Saat drill, Z relatif dari posisi yang sudah di-reference
-
-### Button Functions
-
-| Button | Fungsi |
-|--------|--------|
-| START | 2-click drill workflow |
-| STOP | Stop execution |
-| CALIBRATE | Set offset (X, Y, Z) |
-| HOME | CNC homing (X, Y, Z) |
-| STANDBY | Move ke posisi standby |
-| GOTO FIRST | Move ke titik pertama dari `work_points` untuk alignment PCB |
-| GOTO LAST | Move ke titik terakhir dari `work_points` untuk alignment PCB |
-| UNLOCK | Unlock GRBL |
-| CHECK | Preflight check (model, calibration, camera, CNC) |
-| RESET | Stop workflow + clear offsets + recover CNC |
-
-## Files
-
-| File | Fungsi |
-|------|--------|
-| `config/config.json` | System configuration |
-| `config/calibration_affine.json` | Affine transformation matrix |
-| `config/last_job_points.json` | Original drill points |
-| `config/cal_offset.json` | X, Y, Z offset dari CALIBRATE |
-| `config/work_points.json` | last_job_points + cal_offset |
-| `logs/jobs/*.json` | Telemetry per job (event + metrics) |
+- `config/last_job_points.json`
+- `config/work_points.json`
+- `config/mapping_output.gcode`
+- `config/cal_offset.json`
+- `temp/overlay.jpg`
+- `logs/jobs/*.json`
 
 ## Metrics API
 
-- `GET /api/metrics` → ringkasan semua job logs
-- `GET /api/metrics?date_utc=YYYY-MM-DD` → ringkasan harian (UTC)
-- KPI refine tersedia: `refine_started_total`, `refine_applied_total`, `refine_apply_rate_pct`, `top_refine_skip_status`
+- `GET /api/metrics`
+- `GET /api/metrics?date_utc=YYYY-MM-DD`
 
-## State Machine
+KPI refine: `refine_started_total`, `refine_applied_total`, `refine_apply_rate_pct`, `top_refine_skip_status`.
 
-```
-IDLE → STANDBY → STANDBY_READY → ACQUIRING → DRILLING → STANDBY
-                     ↓
-              CALIBRATE (PAUSE)
-```
+## Dokumentasi Tambahan
 
-## Error Handling
-
-- Zero detection: Alert operator, retry dengan threshold adjustment
-- Out of bounds: Clip ke workspace bounds
-- Hardware timeout: Retry dengan exponential backoff
-
-## Development Plan
-
-Lihat `PLAN.md` untuk detailed 8-phase roadmap, architecture lengkap, dan task decomposition.
+- `docs/SCRIPT_USAGE.md`: daftar script + fungsi + cara pakai detail.
+- `docs/DOKUMENTASI.md`: ringkasan operasional.
+- `docs/STRUCTURE.md`: struktur source dan command aktif.
+- `calibrate/README_Calibrate.md`: detail proses calibrate.

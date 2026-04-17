@@ -5,11 +5,11 @@ import os
 from datetime import datetime
 
 # Configuration
-MODEL_PATH = "best.pt"  # 640x480 model
-SAVE_FOLDER = "D:/PCB_Dataset/Live_Output_640x480"
+MODEL_PATH = "refine/best.pt"  # 640x480 model
+SAVE_FOLDER = "refine/output"
 IMG_SIZE = (640, 480)  # 640x480
-f = open("cam.txt", "r")
-camno=f.read()
+# f = open("cam.txt", "r")
+# camno=f.read()
 
 # Create save folder
 if not os.path.exists(SAVE_FOLDER):
@@ -20,7 +20,9 @@ if not os.path.exists(SAVE_FOLDER):
 model = YOLO(MODEL_PATH)
 
 # Initialize webcam
-cap = cv2.VideoCapture(int(camno))
+# 
+# cap = cv2.VideoCapture(int(camno))
+cap = cv2.VideoCapture(2)
 if not cap.isOpened():
     print("Error: Could not open webcam")
     exit()

@@ -1,0 +1,1417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Auto CNC Mapping + Calibrate</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        :root {
+            --bg: #f0f2f5;
+            --surface: #ffffff;
+            --surface-2: #f7f9fc;
+            --border: #d0d7e2;
+            --border-2: #b8c2d0;
+            --text: #1a2236;
+            --text-2: #4a5568;
+            --text-3: #8a96a8;
+            --blue: #1a6ed8;
+            --blue-lt: #e8f0fb;
+            --blue-md: #c5d8f7;
+            --green: #1a9c54;
+            --green-lt: #e4f5ec;
+            --green-md: #b8e8cc;
+            --red: #d63b3b;
+            --red-lt: #faeaea;
+            --red-md: #f2c0c0;
+            --amber: #b06b00;
+            --amber-lt: #fdf3e0;
+            --amber-md: #f5d99a;
+            --radius: 8px;
+            --shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+            --mono: "JetBrains Mono", Consolas, monospace;
+            --sans: "Inter", "Segoe UI", Tahoma, sans-serif;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: var(--sans);
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+
+        .header {
+            border-bottom: 1.5px solid var(--border);
+            background: var(--surface);
+            box-shadow: var(--shadow);
+        }
+
+        .header-inner {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 14px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+        }
+
+        .title-wrap h1 {
+            font-size: 24px;
+            line-height: 1.2;
+        }
+
+        .title-wrap p {
+            margin-top: 4px;
+            color: var(--text-2);
+            font-size: 13px;
+        }
+
+        .live-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border: 1.5px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 10px;
+            background: var(--surface-2);
+            color: var(--text-2);
+            font-size: 12px;
+            font-family: var(--mono);
+            margin-bottom: 10px;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #9ca3af;
+        }
+
+        .dot.online { background: var(--green); }
+        .dot.offline { background: var(--red); }
+
+        .panel {
+            background: var(--surface);
+            border: 1.5px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .panel-header {
+            background: var(--surface-2);
+            border-bottom: 1.5px solid var(--border);
+            padding: 10px 14px;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 1.3px;
+            text-transform: uppercase;
+            color: var(--text-2);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .panel-body { padding: 12px; }
+
+        .page {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 16px 20px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .top-layout-grid {
+            display: grid;
+            grid-template-columns: 320px minmax(0, 2fr) minmax(220px, 1fr);
+            gap: 8px;
+            align-items: start;
+        }
+
+        .left-top-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .status-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0 4px;
+        }
+
+        .status-table th {
+            text-align: right;
+            font-size: 11px;
+            color: var(--text-3);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            padding: 2px 8px;
+        }
+
+        .status-table th:first-child,
+        .status-table td:first-child {
+            text-align: left;
+            width: 84px;
+            padding-left: 4px;
+            font-weight: 700;
+            color: var(--blue);
+        }
+
+        .status-table td {
+            text-align: right;
+            font-family: var(--mono);
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-2);
+            padding: 7px 8px;
+        }
+
+        #status {
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            min-width: 86px;
+            padding: 3px 10px;
+            border-radius: 999px;
+            border: 1.5px solid var(--border);
+            font-size: 12px;
+            text-transform: uppercase;
+            color: var(--text-2);
+            background: var(--surface-2);
+        }
+
+        #status.status-running {
+            color: var(--green);
+            background: var(--green-lt);
+            border-color: var(--green-md);
+        }
+
+        #status.status-idle {
+            color: var(--blue);
+            background: var(--blue-lt);
+            border-color: var(--blue-md);
+        }
+
+        #status.status-error,
+        #status.status-alarm {
+            color: var(--red);
+            background: var(--red-lt);
+            border-color: var(--red-md);
+        }
+
+        .dual-webcam-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .webcam-item {
+            border: 1.5px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 8px;
+            background: var(--surface);
+        }
+
+        .webcam-item.main-camera { padding: 10px; }
+
+        .cam-select-wrap {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+
+        select,
+        input[type="number"] {
+            background: var(--surface);
+            border: 1.5px solid var(--border-2);
+            border-radius: 6px;
+            font-family: var(--mono);
+            color: var(--text);
+            padding: 7px 10px;
+            width: 100%;
+            font-size: 12px;
+        }
+
+        select:focus,
+        input[type="number"]:focus {
+            outline: none;
+            border-color: var(--blue);
+            box-shadow: 0 0 0 3px rgba(26, 110, 216, 0.12);
+        }
+
+        .btn {
+            border: 1.5px solid transparent;
+            border-radius: 6px;
+            font-family: var(--mono);
+            font-size: 12px;
+            font-weight: 700;
+            padding: 8px 10px;
+            cursor: pointer;
+            transition: all 0.12s;
+            white-space: nowrap;
+        }
+
+        .btn:active:not(:disabled) { transform: scale(0.96); }
+        .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+        .btn-blue { background: var(--blue-lt); border-color: var(--blue-md); color: var(--blue); }
+        .btn-green { background: var(--green-lt); border-color: var(--green-md); color: var(--green); }
+        .btn-red { background: var(--red-lt); border-color: var(--red-md); color: var(--red); }
+        .btn-amber { background: var(--amber-lt); border-color: var(--amber-md); color: var(--amber); }
+
+        .btn-blue:hover:not(:disabled) { background: var(--blue-md); }
+        .btn-green:hover:not(:disabled) { background: var(--green-md); }
+        .btn-red:hover:not(:disabled) { background: var(--red-md); }
+        .btn-amber:hover:not(:disabled) { background: var(--amber-md); }
+
+        .webcam-container {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 16/9;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1.5px solid var(--border);
+            background: #0a0c10;
+        }
+
+        .webcam-container img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            display: block;
+        }
+
+        .video-loading {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #9ca3af;
+            background: rgba(13, 16, 24, 0.86);
+            font-family: var(--mono);
+            font-size: 12px;
+            transition: opacity 0.25s ease;
+            pointer-events: none;
+        }
+
+        .video-loading.hidden { opacity: 0; }
+
+        .webcam-label {
+            position: absolute;
+            left: 8px;
+            bottom: 8px;
+            background: rgba(0, 0, 0, 0.58);
+            color: #cbd5f0;
+            border-radius: 4px;
+            padding: 2px 7px;
+            font-family: var(--mono);
+            font-size: 10px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        .subtle {
+            color: #cbd5f0;
+            position: absolute;
+            right: 8px;
+            top: 8px;
+            background: rgba(0, 0, 0, 0.58);
+            border-radius: 4px;
+            padding: 2px 7px;
+            font-family: var(--mono);
+            font-size: 10px;
+        }
+
+        .progress-meta {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            color: var(--text-2);
+            font-size: 12px;
+            font-family: var(--mono);
+        }
+
+        .progress-bar {
+            height: 20px;
+            border-radius: 999px;
+            background: var(--surface-2);
+            border: 1.5px solid var(--border);
+            overflow: hidden;
+        }
+
+        .wizard-text {
+            font-family: var(--mono);
+            font-size: 12px;
+            color: var(--text-2);
+            line-height: 1.6;
+        }
+
+        .wizard-step {
+            font-weight: 700;
+            color: var(--blue);
+            margin-bottom: 6px;
+        }
+
+        .wizard-hint {
+            color: var(--text-2);
+        }
+
+        .summary-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px 10px;
+            font-family: var(--mono);
+            font-size: 12px;
+        }
+
+        .summary-grid .k {
+            color: var(--text-3);
+        }
+
+        .summary-grid .v {
+            text-align: right;
+            color: var(--text-2);
+            font-weight: 700;
+        }
+
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, var(--blue), var(--green));
+            transition: width 0.25s ease;
+        }
+
+        .middle-stack,
+        .right-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .controls .btn {
+            width: 100%;
+            padding: 10px;
+            font-size: 13px;
+        }
+
+        .jog-inputs {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .jog-area {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .jog-xy-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 56px);
+            grid-template-rows: repeat(3, 56px);
+            gap: 4px;
+        }
+
+        .jog-btn {
+            background: var(--surface-2);
+            border: 1.5px solid var(--border-2);
+            border-radius: 8px;
+            font-size: 20px;
+            color: var(--text-2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--mono);
+            cursor: pointer;
+            user-select: none;
+            transition: all 0.12s;
+        }
+
+        .jog-btn:hover:not(.jog-center) {
+            background: var(--blue-lt);
+            border-color: var(--blue-md);
+            color: var(--blue);
+            transform: scale(1.04);
+        }
+
+        .jog-btn:active:not(.jog-center) { transform: scale(0.93); }
+
+        .jog-center {
+            cursor: default;
+            color: var(--text-3);
+            font-size: 11px;
+            letter-spacing: 1px;
+            font-weight: 700;
+        }
+
+        .jog-z {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .jog-z .jog-btn { width: 56px; height: 56px; }
+
+        .console-wrap {
+            border: 1.5px solid #2e3450;
+            border-radius: 6px;
+            background: #1c2030;
+            overflow: hidden;
+        }
+
+        .console-toolbar {
+            background: #242840;
+            border-bottom: 1px solid #2e3450;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 7px 12px;
+            color: #6a7a9a;
+            font-family: var(--mono);
+            font-size: 11px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        .log-container {
+            height: 170px;
+            overflow-y: auto;
+            padding: 10px 12px;
+            font-family: var(--mono);
+            font-size: 12px;
+            line-height: 1.7;
+        }
+
+        .log-entry { color: #93c5fd; }
+        .log-entry.error { color: #fca5a5; }
+        .log-entry.success { color: #6ee7b7; }
+        .log-entry.warn { color: #fcd34d; }
+
+        .overlay-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+
+        .overlay-controls-group {
+            display: flex;
+            gap: 6px;
+        }
+
+        .overlay-btn {
+            min-width: 34px;
+            height: 30px;
+            border: 1.5px solid var(--border-2);
+            background: var(--surface-2);
+            color: var(--text-2);
+            border-radius: 6px;
+            font-family: var(--mono);
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .overlay-btn:hover {
+            background: var(--blue-lt);
+            border-color: var(--blue-md);
+            color: var(--blue);
+        }
+
+        .overlay-zoom-label {
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text-3);
+            min-width: 56px;
+            text-align: right;
+        }
+
+        .overlay-viewport {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 16/9;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1.5px solid var(--border);
+            background: #0a0c10;
+            cursor: grab;
+            touch-action: none;
+        }
+
+        .overlay-viewport.dragging {
+            cursor: grabbing;
+        }
+
+        .overlay-image {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            display: block;
+            transform-origin: 0 0;
+            user-select: none;
+            -webkit-user-drag: none;
+        }
+
+        .top-nav {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 8px;
+        }
+
+        .back-link {
+            text-decoration: none;
+        }
+
+
+        @media (max-width: 1300px) {
+            .top-layout-grid { grid-template-columns: 1fr; }
+        }
+
+        @media (max-width: 760px) {
+            .page { padding: 12px; }
+            .controls,
+            .jog-inputs { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <main class="page">
+        <div class="top-nav">
+            <a class="btn btn-blue back-link" href="/">BACK</a>
+        </div>
+        <section class="top-layout-grid">
+            <div class="left-top-stack">
+                <div class="panel">
+                    <div class="panel-header">Machine Status</div>
+                    <div class="panel-body">
+                        <div class="live-status" aria-live="polite">
+                            <span class="dot offline" id="conn-dot"></span>
+                            <span id="conn-text">Disconnected</span>
+                            <span id="last-update">No data</span>
+                        </div>
+                        <table class="status-table">
+                            <tbody>
+                                <tr>
+                                    <td>Status</td>
+                                    <td><span id="status">IDLE</span></td>
+                                </tr>
+                                <tr>
+                                    <td>State</td>
+                                    <td id="exec-state">0</td>
+                                </tr>
+                                <tr>
+                                    <td>X (mm)</td>
+                                    <td id="pos-x">0.0</td>
+                                </tr>
+                                <tr>
+                                    <td>Y (mm)</td>
+                                    <td id="pos-y">0.0</td>
+                                </tr>
+                                <tr>
+                                    <td>Z (mm)</td>
+                                    <td id="pos-z">0.0</td>
+                                </tr>
+                                <tr>
+                                    <td>Job</td>
+                                    <td id="job-id">-</td>
+                                </tr>
+                                <tr>
+                                    <td>Preflight</td>
+                                    <td id="preflight-status">N/A</td>
+                                </tr>
+                                <tr>
+                                    <td>Warning</td>
+                                    <td id="last-warning">-</td>
+                                </tr>
+                                <tr>
+                                    <td>Error</td>
+                                    <td id="last-error">-</td>
+                                </tr>
+                                <tr>
+                                    <td>ErrCode</td>
+                                    <td id="error-code">-</td>
+                                </tr>
+                                <tr>
+                                    <td>DetThr</td>
+                                    <td id="det-thr">-</td>
+                                </tr>
+                                <tr>
+                                    <td>TotalMs</td>
+                                    <td id="metric-total-ms">-</td>
+                                </tr>
+                                <tr>
+                                    <td>DrillMs</td>
+                                    <td id="metric-drill-ms">-</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">Progress</div>
+                    <div class="panel-body">
+                        <div class="progress-meta">
+                            <span id="progress-fraction">0 / 0</span>
+                            <span id="progress-percent">0%</span>
+                        </div>
+                        <div class="progress-bar" aria-label="Progress">
+                            <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">Operation Wizard</div>
+                    <div class="panel-body wizard-text">
+                        <div class="wizard-step" id="wizard-step">Step 1/4: Run CHECK preflight</div>
+                        <div class="wizard-hint" id="wizard-hint">Follow sequence: CHECK -> START -> START -> Done.</div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">Last Job Summary</div>
+                    <div class="panel-body">
+                        <div class="summary-grid">
+                            <div class="k">Job</div><div class="v" id="sum-job">-</div>
+                            <div class="k">Status</div><div class="v" id="sum-status">-</div>
+                            <div class="k">Points</div><div class="v" id="sum-points">-</div>
+                            <div class="k">Total (ms)</div><div class="v" id="sum-totalms">-</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">
+                        <span>System Log</span>
+                        <button class="btn btn-red" id="btn-clear-log">CLEAR</button>
+                    </div>
+                    <div class="panel-body" style="padding: 12px;">
+                        <div class="console-wrap">
+                            <div class="console-toolbar">
+                                <span>Serial Console</span>
+                                <span>Output</span>
+                            </div>
+                            <div class="log-container" id="log" aria-live="polite"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="middle-stack">
+                <div class="webcam-item main-camera">
+                    <div class="cam-select-wrap">
+                        <select id="camera-source" aria-label="Main camera source">
+                            <option value="">&#8212; Pilih kamera &#8212;</option>
+                        </select>
+                        <button class="btn btn-blue" data-requires-ws id="btn-camera-refresh" title="Refresh daftar kamera">&#8635;</button>
+                        <button class="btn btn-green" data-requires-ws id="btn-camera-connect">CONNECT</button>
+                    </div>
+                    <div class="webcam-container">
+                        <img id="video" src="/video/stream" alt="Main Camera Feed">
+                        <div class="video-loading" id="video-loading">Loading camera stream...</div>
+                        <div class="webcam-label">Main Camera Feed</div>
+                        <span class="subtle" id="video-caption">Waiting stream</span>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">Manual CNC Control</div>
+                    <div class="panel-body">
+                        <div class="jog-inputs">
+                            <select id="jog-step" aria-label="Jog step">
+                                <option value="0.1">0.1 mm</option>
+                                <option value="0.5">0.5 mm</option>
+                                <option value="1" selected>1 mm</option>
+                                <option value="5">5 mm</option>
+                            </select>
+                            <input id="jog-feed" type="number" value="600" min="50" step="50" placeholder="Feed" aria-label="Jog feed">
+                        </div>
+                        <div class="jog-area">
+                            <div class="jog-xy-grid">
+                                <button class="jog-btn" data-requires-ws id="btn-jog-xy-up-left">↖</button>
+                                <button class="jog-btn" data-requires-ws id="btn-jog-y-plus">↑</button>
+                                <button class="jog-btn" data-requires-ws id="btn-jog-xy-up-right">↗</button>
+                                <button class="jog-btn" data-requires-ws id="btn-jog-x-minus">←</button>
+                                <div class="jog-btn jog-center">XY</div>
+                                <button class="jog-btn" data-requires-ws id="btn-jog-x-plus">→</button>
+                                <button class="jog-btn" data-requires-ws id="btn-jog-xy-down-left">↙</button>
+                                <button class="jog-btn" data-requires-ws id="btn-jog-y-minus">↓</button>
+                                <button class="jog-btn" data-requires-ws id="btn-jog-xy-down-right">↘</button>
+                            </div>
+                            <div class="jog-z">
+                                <button class="jog-btn" data-requires-ws id="btn-jog-z-plus">Z+</button>
+                                <button class="jog-btn" data-requires-ws id="btn-jog-z-minus">Z-</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="right-stack">
+                <div class="panel">
+                    <div class="panel-header">Overlay Preview</div>
+                    <div class="panel-body">
+                        <div class="overlay-controls">
+                            <div class="overlay-controls-group">
+                                <button class="overlay-btn" id="btn-overlay-zoom-in" aria-label="Zoom in">+</button>
+                                <button class="overlay-btn" id="btn-overlay-zoom-out" aria-label="Zoom out">-</button>
+                                <button class="overlay-btn" id="btn-overlay-reset" aria-label="Reset zoom">R</button>
+                            </div>
+                            <span class="overlay-zoom-label" id="overlay-zoom-label">100%</span>
+                        </div>
+                        <div class="overlay-viewport" id="overlay-viewport">
+                            <img class="overlay-image" id="overlay-preview" src="/temp/overlay.jpg" alt="Overlay Preview">
+                            <div class="webcam-label">Overlay Preview</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">Controls</div>
+                    <div class="panel-body">
+                        <div class="wizard-text" style="margin-bottom:10px;">
+                            <div class="wizard-step" id="mapping-flow">Mapping: idle</div>
+                            <div class="wizard-hint" id="calibrate-flow">Calibrate: idle</div>
+                        </div>
+                        <div class="controls">
+                            <button class="btn btn-green" data-requires-ws id="btn-mapping">MAPPING</button>
+                            <button class="btn btn-red" data-requires-ws id="btn-stop">STOP</button>
+                            <button class="btn btn-blue" data-requires-ws id="btn-calibrate">CALIBRATE</button>
+                            <button class="btn btn-blue" data-requires-ws id="btn-home">HOME</button>
+                            <button class="btn btn-blue" data-requires-ws id="btn-home-z">Z-HOME</button>
+                            <button class="btn btn-blue" data-requires-ws id="btn-standby">STANDBY</button>
+                            <button class="btn btn-blue" data-requires-ws id="btn-unlock">UNLOCK</button>
+                            <button class="btn btn-blue" data-requires-ws id="btn-preflight">CHECK</button>
+                            <button class="btn btn-amber" data-requires-ws id="btn-reset">RESET</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        let ws;
+        let reconnectTimer = null;
+        let reconnectAttempts = 0;
+        let latestState = {};
+        let wsOnline = false;
+
+        const MAX_LOG_ITEMS = 250;
+        const connDot = document.getElementById('conn-dot');
+        const connText = document.getElementById('conn-text');
+        const lastUpdateText = document.getElementById('last-update');
+        const videoCaption = document.getElementById('video-caption');
+        const videoLoading = document.getElementById('video-loading');
+        const overlayPreview = document.getElementById('overlay-preview');
+        const overlayViewport = document.getElementById('overlay-viewport');
+        const overlayZoomLabel = document.getElementById('overlay-zoom-label');
+        const btnOverlayZoomIn = document.getElementById('btn-overlay-zoom-in');
+        const btnOverlayZoomOut = document.getElementById('btn-overlay-zoom-out');
+        const btnOverlayReset = document.getElementById('btn-overlay-reset');
+        const overlayState = {
+            scale: 1,
+            minScale: 1,
+            maxScale: 8,
+            translateX: 0,
+            translateY: 0,
+            dragging: false,
+            lastPointerX: 0,
+            lastPointerY: 0,
+        };
+        const wsBoundButtons = document.querySelectorAll('[data-requires-ws]');
+
+        const guardButtonIds = [
+            'btn-mapping',
+            'btn-stop',
+            'btn-calibrate',
+            'btn-home',
+            'btn-home-z',
+            'btn-standby',
+            'btn-unlock',
+            'btn-preflight',
+            'btn-reset',
+            'btn-camera-refresh',
+            'btn-camera-connect',
+            'btn-jog-xy-up-left',
+            'btn-jog-y-plus',
+            'btn-jog-xy-up-right',
+            'btn-jog-x-minus',
+            'btn-jog-x-plus',
+            'btn-jog-xy-down-left',
+            'btn-jog-y-minus',
+            'btn-jog-xy-down-right',
+            'btn-jog-z-plus',
+            'btn-jog-z-minus'
+        ];
+
+        function isWsOpen() {
+            return ws && ws.readyState === WebSocket.OPEN;
+        }
+
+        function setWsDependentControls(enabled) {
+            wsBoundButtons.forEach((btn) => {
+                btn.disabled = !enabled;
+            });
+        }
+
+        function setButtonEnabled(id, enabled) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.disabled = !enabled;
+        }
+
+        function applyControlGuards(data) {
+            const status = String(data.status || '').toUpperCase();
+            const startState = String(data.start_state || '').toLowerCase();
+            const busyStatuses = new Set([
+                'DRILLING', 'ACQUIRING', 'TRANSFORM', 'CALIBRATE_RUNNING',
+                'HOMING', 'RESETTING', 'CAMERA_CONNECTING', 'PRECHECK_RUNNING', 'BUSY'
+            ]);
+            const isBusy = busyStatuses.has(status);
+            const isDrilling = status === 'DRILLING';
+
+            guardButtonIds.forEach((id) => setButtonEnabled(id, wsOnline));
+            if (!wsOnline) return;
+
+            setButtonEnabled('btn-preflight', !isBusy);
+            setButtonEnabled('btn-mapping', !isBusy && (startState === 'idle' || startState === '' || startState === 'mapped_ready' || startState === 'standby_ready'));
+            setButtonEnabled('btn-stop', isBusy || isDrilling || status === 'STANDBY_MOVING');
+            setButtonEnabled('btn-calibrate', !isBusy && !isDrilling);
+            setButtonEnabled('btn-home', !isBusy && !isDrilling);
+            setButtonEnabled('btn-home-z', !isBusy && !isDrilling);
+            setButtonEnabled('btn-standby', !isBusy && !isDrilling);
+            setButtonEnabled('btn-unlock', !isBusy && !isDrilling);
+            setButtonEnabled('btn-reset', !isBusy || status === 'ERROR');
+            setButtonEnabled('btn-camera-refresh', !isBusy && !isDrilling);
+            setButtonEnabled('btn-camera-connect', !isBusy && !isDrilling);
+
+            const jogEnabled = !isBusy && !isDrilling && !!data.connected;
+            [
+                'btn-jog-xy-up-left', 'btn-jog-y-plus', 'btn-jog-xy-up-right',
+                'btn-jog-x-minus', 'btn-jog-x-plus', 'btn-jog-xy-down-left',
+                'btn-jog-y-minus', 'btn-jog-xy-down-right', 'btn-jog-z-plus', 'btn-jog-z-minus'
+            ].forEach((id) => setButtonEnabled(id, jogEnabled));
+        }
+
+        function renderWizard(data) {
+            const stepEl = document.getElementById('wizard-step');
+            const hintEl = document.getElementById('wizard-hint');
+            const status = String(data.status || '').toUpperCase();
+            const startState = String(data.start_state || '').toLowerCase();
+            const preOk = data.preflight?.ok === true;
+
+            if (!preOk) {
+                stepEl.textContent = 'Step 1/3: Run CHECK preflight';
+                hintEl.textContent = 'Pastikan model, calibration, camera, CNC semua OK.';
+                return;
+            }
+            if (startState === 'idle' && (status === 'IDLE' || status === 'STANDBY')) {
+                stepEl.textContent = 'Step 2/3: Press MAPPING';
+                hintEl.textContent = 'Workflow mapping-only: standby, capture, save outputs.';
+                return;
+            }
+            if (startState === 'standby_ready' || status === 'STANDBY_READY') {
+                stepEl.textContent = 'Step 3/3: Mapping in progress';
+                hintEl.textContent = 'Sistem sedang proses mapping, lalu kembali HOME.';
+                return;
+            }
+            if (startState === 'mapped_ready' || status === 'MAPPING_DONE') {
+                stepEl.textContent = 'Step 3/3: Mapping done';
+                hintEl.textContent = 'Output tersimpan, mesin akan HOME sebelum IDLE.';
+                return;
+            }
+            if (status === 'ACQUIRING' || status === 'TRANSFORM' || status === 'DRILLING') {
+                stepEl.textContent = 'Processing job';
+                hintEl.textContent = 'Sistem sedang capture/transform/drill. Monitor progress.';
+                return;
+            }
+            if (status === 'COMPLETE' || (data.last_job_summary && data.last_job_summary.status === 'complete')) {
+                stepEl.textContent = 'Step 4/4: Job done';
+                hintEl.textContent = 'Review summary. Jika perlu koreksi posisi, jalankan CALIBRATE.';
+                return;
+            }
+            stepEl.textContent = 'Wizard: Ready';
+            hintEl.textContent = 'Gunakan CHECK lalu START sesuai urutan.';
+        }
+
+        function renderProcessIndicators(data) {
+            const status = String(data.status || '').toUpperCase();
+            const calibrateState = String(data.calibrate_state || 'idle').toLowerCase();
+            const btnMapping = document.getElementById('btn-mapping');
+            const btnCalibrate = document.getElementById('btn-calibrate');
+            const mappingFlow = document.getElementById('mapping-flow');
+            const calibrateFlow = document.getElementById('calibrate-flow');
+
+            let mappingText = 'Mapping: idle';
+            let mappingBtnText = 'MAPPING';
+            if (status === 'MAPPING_STARTING' || status === 'STANDBY_MOVING' || status === 'STANDBY_READY') {
+                mappingText = 'Mapping: menuju coordinate standby...';
+                mappingBtnText = 'MAPPING (STANDBY)';
+            } else if (status === 'ACQUIRING') {
+                mappingText = 'Capture: mengambil gambar...';
+                mappingBtnText = 'CAPTURE...';
+            } else if (status === 'TRANSFORM' || status === 'MAPPING_DONE' || status === 'HOMING') {
+                mappingText = 'Finish: pemrosesan output & kembali HOME...';
+                mappingBtnText = 'FINISH...';
+            }
+
+            let calibrateText = 'Calibrate: idle';
+            let calibrateBtnText = 'CALIBRATE';
+            if (calibrateState === 'running' || status === 'CALIBRATE_RUNNING') {
+                calibrateText = 'Calibrate: deteksi target & gerak ke titik...';
+                calibrateBtnText = 'CALIBRATING...';
+            } else if (calibrateState === 'done') {
+                calibrateText = 'Calibrate: klik sekali lagi untuk simpan offset';
+                calibrateBtnText = 'CALIBRATE (SAVE OFFSET)';
+            }
+
+            if (mappingFlow) mappingFlow.textContent = mappingText;
+            if (calibrateFlow) calibrateFlow.textContent = calibrateText;
+            if (btnMapping) btnMapping.textContent = mappingBtnText;
+            if (btnCalibrate) btnCalibrate.textContent = calibrateBtnText;
+        }
+
+        function renderLastSummary(data) {
+            const summary = data.last_job_summary || {};
+            document.getElementById('sum-job').textContent = summary.job_id || '-';
+            document.getElementById('sum-status').textContent = summary.status || '-';
+            document.getElementById('sum-points').textContent =
+                (typeof summary.points === 'number') ? String(summary.points) : '-';
+            document.getElementById('sum-totalms').textContent =
+                (typeof summary.total_ms === 'number') ? summary.total_ms.toFixed(1) : '-';
+        }
+
+        function setConnectionState(online) {
+            connDot.classList.toggle('online', online);
+            connDot.classList.toggle('offline', !online);
+            connText.textContent = online ? 'Connected' : 'Disconnected';
+            videoCaption.textContent = online ? 'Stream active' : 'Waiting stream';
+            wsOnline = online;
+            setWsDependentControls(online);
+            applyControlGuards(latestState);
+        }
+
+        function formatNow() {
+            return new Date().toLocaleTimeString();
+        }
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry ' + type;
+            entry.textContent = '[' + formatNow() + '] ' + message;
+            logDiv.insertBefore(entry, logDiv.firstChild);
+
+            while (logDiv.children.length > MAX_LOG_ITEMS) {
+                logDiv.removeChild(logDiv.lastChild);
+            }
+        }
+
+        function sendCommand(payload, successLog) {
+            if (!isWsOpen()) {
+                log('Command rejected: websocket not connected', 'error');
+                return false;
+            }
+            ws.send(JSON.stringify(payload));
+            if (successLog) {
+                log(successLog, 'success');
+            }
+            return true;
+        }
+
+        function safeNumber(value, fallback = 0) {
+            const num = Number(value);
+            return Number.isFinite(num) ? num : fallback;
+        }
+
+        function statusClass(statusText) {
+            const normalized = String(statusText || '').toLowerCase();
+            if (normalized.includes('run') || normalized.includes('exec')) return 'status-running';
+            if (normalized.includes('alarm') || normalized.includes('error') || normalized.includes('fail')) return 'status-error';
+            if (normalized.includes('idle') || normalized.includes('ready') || normalized.includes('stop')) return 'status-idle';
+            return '';
+        }
+
+        function updateMachineStatus(statusText) {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = statusText || 'IDLE';
+            statusEl.classList.remove('status-running', 'status-idle', 'status-error', 'status-alarm');
+            const cls = statusClass(statusText);
+            if (cls) statusEl.classList.add(cls);
+        }
+
+        function updateProgress(progress) {
+            const totalRaw = safeNumber(progress.total, 0);
+            const currentRaw = safeNumber(progress.current, 0);
+            const total = totalRaw > 0 ? totalRaw : 0;
+            const current = Math.max(0, Math.min(currentRaw, total || currentRaw));
+            const percent = total > 0 ? Math.min(100, (current / total) * 100) : 0;
+
+            document.getElementById('progress-fill').style.width = percent.toFixed(1) + '%';
+            document.getElementById('progress-fraction').textContent = current + ' / ' + total;
+            document.getElementById('progress-percent').textContent = percent.toFixed(1) + '%';
+        }
+
+        function ensureSelectOption(selectEl, value, label) {
+            if (!selectEl || !value) return;
+            const val = String(value);
+            const exists = Array.from(selectEl.options).some(opt => opt.value === val);
+            if (!exists) {
+                const opt = document.createElement('option');
+                opt.value = val;
+                opt.textContent = label || val;
+                selectEl.appendChild(opt);
+            }
+        }
+
+        function selectValue(selectId, value, label) {
+            if (typeof value === 'undefined' || value === null) return;
+            const el = document.getElementById(selectId);
+            if (!el) return;
+            ensureSelectOption(el, value, label);
+            el.value = String(value);
+        }
+
+        async function loadCameraSources(target = null) {
+            const mainEl = document.getElementById('camera-source');
+            if (!mainEl) return;
+            try {
+                const res = await fetch('/api/camera/sources', { cache: 'no-store' });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const payload = await res.json();
+                const sources = Array.isArray(payload.sources) ? payload.sources : [];
+
+                const renderOptions = (el, selectedValue, fallbackLabel) => {
+                    const prior = (selectedValue !== undefined && selectedValue !== null)
+                        ? String(selectedValue)
+                        : String(el.value || '');
+                    el.innerHTML = '';
+                    const defaultOpt = document.createElement('option');
+                    defaultOpt.value = '';
+                    defaultOpt.textContent = '— Pilih kamera —';
+                    el.appendChild(defaultOpt);
+                    sources.forEach((item) => {
+                        const opt = document.createElement('option');
+                        opt.value = String(item.value || '');
+                        opt.textContent = String(item.label || item.value || '');
+                        el.appendChild(opt);
+                    });
+                    if (prior) {
+                        ensureSelectOption(el, prior, fallbackLabel || prior);
+                        el.value = prior;
+                    }
+                };
+                if (!target || target === 'main') {
+                    renderOptions(mainEl, payload.main_source, 'Main source');
+                }
+            } catch (err) {
+                log('Load camera sources failed: ' + err, 'warn');
+            }
+        }
+
+        function updateUI(data) {
+            latestState = data || {};
+            updateMachineStatus(data.status || 'IDLE');
+            document.getElementById('exec-state').textContent = data.execution_state ?? '0';
+            document.getElementById('pos-x').textContent = safeNumber(data.position?.x, 0).toFixed(1);
+            document.getElementById('pos-y').textContent = safeNumber(data.position?.y, 0).toFixed(1);
+            document.getElementById('pos-z').textContent = safeNumber(data.position?.z, 0).toFixed(1);
+            document.getElementById('job-id').textContent = data.job_id || '-';
+            document.getElementById('last-warning').textContent = data.last_warning || '-';
+            document.getElementById('last-error').textContent = data.last_error || '-';
+            document.getElementById('error-code').textContent = data.error_code || '-';
+            document.getElementById('det-thr').textContent =
+                (typeof data.detection_threshold_used === 'number')
+                    ? data.detection_threshold_used.toFixed(3)
+                    : '-';
+            document.getElementById('metric-total-ms').textContent =
+                (typeof data.last_metrics?.total_ms === 'number') ? data.last_metrics.total_ms.toFixed(1) : '-';
+            document.getElementById('metric-drill-ms').textContent =
+                (typeof data.last_metrics?.drill_loop_ms === 'number') ? data.last_metrics.drill_loop_ms.toFixed(1) : '-';
+            document.getElementById('preflight-status').textContent = data.preflight?.ok === true ? 'OK' :
+                (data.preflight?.ok === false ? 'FAIL' : 'N/A');
+            renderWizard(data);
+            renderProcessIndicators(data);
+            renderLastSummary(data);
+            applyControlGuards(data);
+
+            if (typeof data.camera_source !== 'undefined') {
+                selectValue('camera-source', data.camera_source, 'Main source');
+            }
+            updateProgress(data.progress || {});
+            lastUpdateText.textContent = 'Updated ' + formatNow();
+            refreshOverlayPreview();
+        }
+
+        function clamp(value, min, max) {
+            return Math.min(max, Math.max(min, value));
+        }
+
+        function refreshOverlayPreview() {
+            if (!overlayPreview) return;
+            overlayPreview.src = '/temp/overlay.jpg?t=' + Date.now();
+        }
+
+        function applyOverlayTransform() {
+            if (!overlayPreview) return;
+            overlayPreview.style.transform =
+                `translate(${overlayState.translateX}px, ${overlayState.translateY}px) scale(${overlayState.scale})`;
+            if (overlayZoomLabel) {
+                overlayZoomLabel.textContent = Math.round(overlayState.scale * 100) + '%';
+            }
+        }
+
+        function zoomOverlay(factor) {
+            if (!overlayViewport) return;
+            const rect = overlayViewport.getBoundingClientRect();
+            const centerX = rect.width / 2;
+            const centerY = rect.height / 2;
+
+            const oldScale = overlayState.scale;
+            const newScale = clamp(oldScale * factor, overlayState.minScale, overlayState.maxScale);
+            if (newScale === oldScale) return;
+
+            const worldX = (centerX - overlayState.translateX) / oldScale;
+            const worldY = (centerY - overlayState.translateY) / oldScale;
+
+            overlayState.scale = newScale;
+            overlayState.translateX = centerX - worldX * newScale;
+            overlayState.translateY = centerY - worldY * newScale;
+            applyOverlayTransform();
+        }
+
+        function resetOverlayTransform() {
+            overlayState.scale = 1;
+            overlayState.translateX = 0;
+            overlayState.translateY = 0;
+            applyOverlayTransform();
+        }
+
+        function startOverlayDrag(clientX, clientY) {
+            if (!overlayViewport) return;
+            overlayState.dragging = true;
+            overlayState.lastPointerX = clientX;
+            overlayState.lastPointerY = clientY;
+            overlayViewport.classList.add('dragging');
+        }
+
+        function moveOverlayDrag(clientX, clientY) {
+            if (!overlayState.dragging) return;
+            const dx = clientX - overlayState.lastPointerX;
+            const dy = clientY - overlayState.lastPointerY;
+            overlayState.translateX += dx;
+            overlayState.translateY += dy;
+            overlayState.lastPointerX = clientX;
+            overlayState.lastPointerY = clientY;
+            applyOverlayTransform();
+        }
+
+        function endOverlayDrag() {
+            if (!overlayViewport) return;
+            overlayState.dragging = false;
+            overlayViewport.classList.remove('dragging');
+        }
+
+        function scheduleReconnect() {
+            if (reconnectTimer) return;
+            const delay = Math.min(10000, 1000 * Math.pow(2, reconnectAttempts));
+            reconnectAttempts += 1;
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                connectWebSocket();
+            }, delay);
+            log('Reconnect in ' + (delay / 1000).toFixed(1) + 's', 'warn');
+        }
+
+        function connectWebSocket() {
+            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+                return;
+            }
+
+            const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+            ws = new WebSocket(`${scheme}://${location.host}/ws`);
+
+            ws.onopen = function() {
+                reconnectAttempts = 0;
+                setConnectionState(true);
+                log('WebSocket connected', 'success');
+                loadCameraSources();
+            };
+
+            ws.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    updateUI(data);
+                } catch (err) {
+                    log('Invalid message payload: ' + err, 'error');
+                }
+            };
+
+            ws.onerror = function() {
+                log('WebSocket error', 'error');
+            };
+
+            ws.onclose = function() {
+                setConnectionState(false);
+                log('WebSocket disconnected', 'warn');
+                scheduleReconnect();
+            };
+        }
+
+        document.getElementById('btn-mapping').onclick = function() {
+            sendCommand({ command: 'mapping' }, 'Mapping command sent');
+        };
+
+        document.getElementById('btn-stop').onclick = function() {
+            sendCommand({ command: 'stop' }, 'Stop command sent');
+        };
+
+        document.getElementById('btn-calibrate').onclick = function() {
+            sendCommand({ command: 'calibrate' }, 'Calibrate command sent');
+        };
+
+        document.getElementById('btn-home').onclick = function() {
+            sendCommand({ command: 'home' }, 'Home command sent');
+        };
+
+        document.getElementById('btn-home-z').onclick = function() {
+            sendCommand({ command: 'home_z' }, 'Z-Home command sent');
+        };
+
+        document.getElementById('btn-standby').onclick = function() {
+            sendCommand({ command: 'standby' }, 'Standby command sent (X85 Y-95)');
+        };
+
+        document.getElementById('btn-reset').onclick = function() {
+            sendCommand({ command: 'reset' }, 'Reset command sent');
+        };
+
+        document.getElementById('btn-unlock').onclick = function() {
+            sendCommand({ command: 'unlock' }, 'Unlock command sent');
+        };
+
+        document.getElementById('btn-preflight').onclick = function() {
+            sendCommand({ command: 'preflight' }, 'Preflight check command sent');
+        };
+
+        document.getElementById('btn-camera-connect').onclick = function() {
+            const source = String(document.getElementById('camera-source').value || '').trim();
+            if (!source) {
+                log('Pilih source main camera terlebih dahulu', 'warn');
+                return;
+            }
+            sendCommand({ command: 'camera_connect', source: source }, 'Camera connect command sent: source=' + source);
+        };
+
+        document.getElementById('btn-camera-refresh').onclick = function() {
+            loadCameraSources('main');
+            log('Refresh source main camera', 'success');
+        };
+
+        function sendJog(dx, dy, dz) {
+            const step = safeNumber(document.getElementById('jog-step').value, 1);
+            const feed = safeNumber(document.getElementById('jog-feed').value, 600);
+
+            if (step <= 0) {
+                log('Jog step must be > 0', 'error');
+                return;
+            }
+            if (feed <= 0) {
+                log('Feed must be > 0', 'error');
+                return;
+            }
+
+            const moveX = dx * step;
+            const moveY = dy * step;
+            const moveZ = dz * step;
+
+            sendCommand(
+                { command: 'jog', dx: moveX, dy: moveY, dz: moveZ, feed: feed },
+                `Jog sent dx=${moveX.toFixed(2)} dy=${moveY.toFixed(2)} dz=${moveZ.toFixed(2)} f=${feed}`
+            );
+        }
+
+        document.getElementById('btn-jog-x-plus').onclick = () => sendJog(1, 0, 0);
+        document.getElementById('btn-jog-x-minus').onclick = () => sendJog(-1, 0, 0);
+        // Machine Y axis is opposite to operator-facing forward/backward view.
+        document.getElementById('btn-jog-y-plus').onclick = () => sendJog(0, -1, 0);
+        document.getElementById('btn-jog-y-minus').onclick = () => sendJog(0, 1, 0);
+        document.getElementById('btn-jog-xy-up-left').onclick = () => sendJog(-1, -1, 0);
+        document.getElementById('btn-jog-xy-up-right').onclick = () => sendJog(1, -1, 0);
+        document.getElementById('btn-jog-xy-down-left').onclick = () => sendJog(-1, 1, 0);
+        document.getElementById('btn-jog-xy-down-right').onclick = () => sendJog(1, 1, 0);
+        document.getElementById('btn-jog-z-plus').onclick = () => sendJog(0, 0, 1);
+        document.getElementById('btn-jog-z-minus').onclick = () => sendJog(0, 0, -1);
+
+        document.getElementById('btn-clear-log').onclick = function() {
+            document.getElementById('log').innerHTML = '';
+            log('Log cleared');
+        };
+
+        document.getElementById('video').addEventListener('load', function() {
+            videoLoading.classList.add('hidden');
+        });
+
+        document.getElementById('video').addEventListener('error', function() {
+            videoLoading.classList.remove('hidden');
+            videoLoading.textContent = 'Camera stream unavailable';
+        });
+
+        if (btnOverlayZoomIn) {
+            btnOverlayZoomIn.addEventListener('click', () => zoomOverlay(1.2));
+        }
+        if (btnOverlayZoomOut) {
+            btnOverlayZoomOut.addEventListener('click', () => zoomOverlay(1 / 1.2));
+        }
+        if (btnOverlayReset) {
+            btnOverlayReset.addEventListener('click', resetOverlayTransform);
+        }
+        if (overlayViewport) {
+            overlayViewport.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                startOverlayDrag(e.clientX, e.clientY);
+            });
+            overlayViewport.addEventListener('mousemove', (e) => {
+                moveOverlayDrag(e.clientX, e.clientY);
+            });
+            overlayViewport.addEventListener('mouseleave', endOverlayDrag);
+            window.addEventListener('mouseup', endOverlayDrag);
+            overlayViewport.addEventListener('touchstart', (e) => {
+                if (!e.touches || e.touches.length !== 1) return;
+                const t = e.touches[0];
+                startOverlayDrag(t.clientX, t.clientY);
+            }, { passive: true });
+            overlayViewport.addEventListener('touchmove', (e) => {
+                if (!e.touches || e.touches.length !== 1) return;
+                const t = e.touches[0];
+                moveOverlayDrag(t.clientX, t.clientY);
+            }, { passive: true });
+            overlayViewport.addEventListener('touchend', endOverlayDrag, { passive: true });
+            overlayViewport.addEventListener('touchcancel', endOverlayDrag, { passive: true });
+        }
+
+        setWsDependentControls(false);
+        setConnectionState(false);
+        loadCameraSources();
+        connectWebSocket();
+        refreshOverlayPreview();
+        resetOverlayTransform();
+        setInterval(refreshOverlayPreview, 2000);
+        log('Dashboard loaded');
+    </script>
+</body>
+</html>
